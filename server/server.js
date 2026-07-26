@@ -7,7 +7,7 @@ const setupSocket = require("./socket/socketHandler");
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json());   
 
 const server = http.createServer(app);
 
