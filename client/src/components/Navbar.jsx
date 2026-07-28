@@ -1,4 +1,4 @@
-import { Layers } from 'lucide-react';
+ import { Layers } from 'lucide-react';
 
 export default function Navbar({ roomId, users, currentUser }) {
   return (
