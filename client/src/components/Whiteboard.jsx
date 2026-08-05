@@ -171,7 +171,11 @@ export default function Whiteboard({ roomId, socket, users = [], onCursorMove })
     if (!pos) return;
 
     if (activeTool === 'text') {
-      setTextInput({ visible: true, x: pos.x, y: pos.y, text: '' });
+      // Delay showing the text input until after the Konva mouse event completes.
+      // This avoids the text field losing focus immediately when created during the mouse down event.
+      setTimeout(() => {
+        setTextInput({ visible: true, x: pos.x, y: pos.y, text: '' });
+      }, 0);
       return;
     }
 
