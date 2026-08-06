@@ -3,7 +3,7 @@ const { v4: uuidv4 } = require('uuid');
 const rooms = new Map(); // Room state
 
 module.exports = (io) => {
-  io.on("connection", (socket) => {
+  io.on("connection", (socket) =>  {
     console.log("User Connected:", socket.id);
 
     socket.on("join-room", ({ roomId, user }) => {
