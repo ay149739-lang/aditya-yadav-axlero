@@ -19,7 +19,7 @@ syncSpace();`);
       setCode(newCode);
     };
 
-    socket.on('code-change', handleCodeChange);
+    socket.on('code-change',  handleCodeChange);
     return () => socket.off('code-change', handleCodeChange);
   }, [socket]);
 
