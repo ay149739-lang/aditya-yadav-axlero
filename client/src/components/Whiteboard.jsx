@@ -32,7 +32,7 @@ export default function Whiteboard({ roomId, socket, users = [], onCursorMove })
         const h = containerRef.current.offsetHeight || containerRef.current.clientHeight || 600;
         setSize({ width: w, height: h });
       }
-    };
+    }; 
 
     checkSize();
     window.addEventListener('resize', checkSize);
