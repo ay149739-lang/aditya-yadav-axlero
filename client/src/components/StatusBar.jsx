@@ -37,7 +37,7 @@ export default function StatusBar({ socket, roomId, users = [], cursor = { x: 0,
           <span>X: {Math.round(cursor.x || 0)}, Y: {Math.round(cursor.y || 0)}</span>
         </div>
 
-        <div className="h-3 w-px bg-white/10" />
+        <div className="h-3 w-px bg-white/10" /> 
 
         <div className="flex items-center gap-1.5">
           <Users size={12} className="text-indigo-400" />
