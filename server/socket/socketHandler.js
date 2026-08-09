@@ -53,7 +53,7 @@ module.exports = (io) => {
     socket.on("draw-start", (data) => {
       const room = rooms.get(data.roomId);
       if (room) room.shapes.push(data);
-      socket.to(data.roomId).emit("draw-start", data);
+      socket.to(data.roomId).emit("draw-start", data); 
     });
 
     socket.on("drawing", (data) => {
