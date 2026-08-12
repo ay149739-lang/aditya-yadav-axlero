@@ -50,7 +50,7 @@ module.exports = (io) => {
     });
 
     // Week 2 Day 1: Placeholder socket events
-    socket.on("draw-start", (data) => {
+    socket.on("draw-start", (data) =>{
       const room = rooms.get(data.roomId);
       if (room) room.shapes.push(data);
       socket.to(data.roomId).emit("draw-start", data); 
