@@ -1,12 +1,45 @@
 import React from 'react';
-import { Wifi, WifiOff, Users, MousePointer, ShieldCheck } from 'lucide-react';
+import { Wifi, WifiOff, Users, MousePointer, ShieldCheck, CheckCircle2, Save, AlertCircle, Loader2 } from 'lucide-react';
 
-export default function StatusBar({ socket, roomId, users = [], cursor = { x: 0, y: 0 } }) {
+export default function StatusBar({ 
+  socket, 
+  roomId, 
+  users = [], 
+  cursor = { x: 0, y: 0 },
+  saveStatus = 'Saved' // 'Saved' | 'Saving...' | 'Error Saving'
+}) {
   const isConnected = Boolean(socket?.connected);
+
+  const getSaveStatusDisplay = () => {
+    switch (saveStatus) {
+      case 'Saving...':
+        return (
+          <div className="flex items-center gap-1 text-amber-400 font-medium">
+            <Loader2 size={12} className="animate-spin" />
+            <span>Saving...</span>
+          </div>
+        );
+      case 'Error Saving':
+        return (
+          <div className="flex items-center gap-1 text-red-400 font-medium">
+            <AlertCircle size={12} />
+            <span>Error Saving</span>
+          </div>
+        );
+      case 'Saved':
+      default:
+        return (
+          <div className="flex items-center gap-1 text-emerald-400 font-medium">
+            <CheckCircle2 size={12} />
+            <span>Saved</span>
+          </div>
+        );
+    }
+  };
 
   return (
     <div className="h-7 bg-[#0E0E0E] border-t border-white/10 flex items-center justify-between px-4 text-[11px] text-gray-400 font-mono select-none z-50">
-      {/* Left: Socket status */}
+      {/* Left: Socket status & Save status */}
       <div className="flex items-center gap-4">
         <div className="flex items-center gap-1.5">
           {isConnected ? (
@@ -24,6 +57,10 @@ export default function StatusBar({ socket, roomId, users = [], cursor = { x: 0,
 
         <div className="h-3 w-px bg-white/10" />
 
+        {getSaveStatusDisplay()}
+
+        <div className="h-3 w-px bg-white/10" />
+
         <div className="flex items-center gap-1.5">
           <ShieldCheck size={12} className="text-indigo-400" />
           <span>SyncSpace v2.0</span>
@@ -37,7 +74,7 @@ export default function StatusBar({ socket, roomId, users = [], cursor = { x: 0,
           <span>X: {Math.round(cursor.x || 0)}, Y: {Math.round(cursor.y || 0)}</span>
         </div>
 
-        <div className="h-3 w-px bg-white/10" /> 
+        <div className="h-3 w-px bg-white/10" />
 
         <div className="flex items-center gap-1.5">
           <Users size={12} className="text-indigo-400" />

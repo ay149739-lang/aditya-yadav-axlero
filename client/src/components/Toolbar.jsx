@@ -1,5 +1,5 @@
 import React from 'react';
-import { Pencil, Square, Type, Eraser, Trash2 } from 'lucide-react';
+import { Pencil, Square, Type, Eraser, Trash2, Undo2, Redo2 } from 'lucide-react';
 
 export default function Toolbar({ 
   activeTool, 
@@ -8,7 +8,11 @@ export default function Toolbar({
   setColor, 
   strokeWidth, 
   setStrokeWidth,
-  onClear 
+  onClear,
+  onUndo,
+  onRedo,
+  canUndo = true,
+  canRedo = true
 }) {
   const tools = [
     { id: 'pencil', icon: Pencil, label: 'Pencil (P)' },
@@ -38,6 +42,36 @@ export default function Toolbar({
             <Icon size={18} />
           </button>
         ))}
+      </div>
+
+      <div className="h-6 w-px bg-white/10" />
+
+      {/* Undo / Redo Actions */}
+      <div className="flex items-center gap-1">
+        <button
+          onClick={onUndo}
+          disabled={!canUndo}
+          title="Undo (Ctrl+Z)"
+          className={`p-2.5 rounded-xl transition-all flex items-center justify-center ${
+            canUndo
+              ? 'text-gray-300 hover:bg-white/10 hover:text-white cursor-pointer'
+              : 'text-gray-600 cursor-not-allowed opacity-40'
+          }`}
+        >
+          <Undo2 size={18} />
+        </button>
+        <button
+          onClick={onRedo}
+          disabled={!canRedo}
+          title="Redo (Ctrl+Y / Ctrl+Shift+Z)"
+          className={`p-2.5 rounded-xl transition-all flex items-center justify-center ${
+            canRedo
+              ? 'text-gray-300 hover:bg-white/10 hover:text-white cursor-pointer'
+              : 'text-gray-600 cursor-not-allowed opacity-40'
+          }`}
+        >
+          <Redo2 size={18} />
+        </button>
       </div>
 
       <div className="h-6 w-px bg-white/10" />

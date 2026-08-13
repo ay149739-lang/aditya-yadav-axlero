@@ -55,24 +55,28 @@ export default function Sidebar({ roomId, users = [], currentUser }) {
               In Room Right Now
             </span>
             {users.map((u) => {
-              const isSelf = u?.id === currentUser?.id || u?.name === currentUser?.name;
+              const isSelf = u?.username === currentUser?.username || u?.id === currentUser?.id;
               return (
                 <div
-                  key={u?.id || u?.name}
+                  key={u?.id || u?.username}
                   className="flex items-center justify-between p-2 rounded-xl bg-white/5 border border-white/5 hover:border-white/10 transition-all"
                 >
                   <div className="flex items-center gap-2.5">
                     <div
-                      className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold text-white shadow-sm"
+                      className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold text-white shadow-sm shrink-0"
                       style={{ backgroundColor: u?.color || '#6366F1' }}
                     >
-                      {u?.name ? u.name.charAt(0).toUpperCase() : 'U'}
+                      {(u?.name || u?.username || 'U').charAt(0).toUpperCase()}
                     </div>
-                    <span className="text-xs font-medium text-gray-200">
-                      {u?.name || 'Guest'} {isSelf && <span className="text-[10px] text-indigo-400 font-mono">(You)</span>}
-                    </span>
+                    <div className="min-w-0">
+                      <span className="text-xs font-medium text-gray-200 block truncate">
+                        {u?.name || u?.username || 'Guest'}
+                        {isSelf && <span className="ml-1 text-[10px] text-indigo-400 font-mono">(You)</span>}
+                      </span>
+                      <span className="text-[10px] text-gray-600 font-mono truncate block">@{u?.username || '—'}</span>
+                    </div>
                   </div>
-                  <Circle size={8} className="text-emerald-400 fill-emerald-400 animate-pulse" />
+                  <Circle size={8} className="text-emerald-400 fill-emerald-400 animate-pulse shrink-0" />
                 </div>
               );
             })}

@@ -10,6 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
     "@tailwindcss/vite": "^4.3.3",
     "framer-motion": "^12.42.2",
     "konva": "^9.3.2",

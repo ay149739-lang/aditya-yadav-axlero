@@ -1,21 +1,42 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Stage, Layer, Line, Rect, Text } from 'react-konva';
 import { v4 as uuidv4 } from 'uuid';
+import { Maximize2, Minimize2 } from 'lucide-react';
 import Toolbar from './Toolbar';
 
-export default function Whiteboard({ roomId, socket, users = [], onCursorMove }) {
+export default function Whiteboard({ 
+  roomId, 
+  socket, 
+  users = [], 
+  onCursorMove,
+  initialShapes = [],
+  onShapesChange,
+  replayShapes = null,
+  isReplayMode = false,
+  panelMode = 'split',
+  onToggleMaximize
+}) {
   const containerRef = useRef(null);
   const [size, setSize] = useState({ width: 800, height: 600 });
   const [activeTool, setActiveTool] = useState('pencil');
   const [color, setColor] = useState('#ffffff');
   const [strokeWidth, setStrokeWidth] = useState(4);
-  const [shapes, setShapes] = useState([]);
+  const [shapes, setShapes] = useState(initialShapes);
   const [isDrawing, setIsDrawing] = useState(false);
   const [currentShapeId, setCurrentShapeId] = useState(null);
   const [cursors, setCursors] = useState({});
   const [textInput, setTextInput] = useState({ visible: false, x: 0, y: 0, text: '' });
 
+  // Per-user Undo / Redo history stacks
+  const myUndoStackRef = useRef([]);
+  const myRedoStackRef = useRef([]);
+  const [, setStackTick] = useState(0);
+
   const currentShapeRef = useRef(null);
+  const textInputRef = useRef(null);
+  const stageRef = useRef(null);
+
+  const activeShapes = isReplayMode && replayShapes !== null ? replayShapes : shapes;
 
   const CURSOR_COLORS = ['#EF4444', '#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#EC4899'];
   const getColorForUser = (userId) => {
@@ -25,6 +46,57 @@ export default function Whiteboard({ roomId, socket, users = [], onCursorMove })
     return CURSOR_COLORS[index % CURSOR_COLORS.length];
   };
 
+  // Sync initial shapes when loaded from recovery/persistence
+  useEffect(() => {
+    if (Array.isArray(initialShapes) && initialShapes.length > 0 && shapes.length === 0) {
+      setShapes(initialShapes);
+    }
+  }, [initialShapes]);
+
+  // Notify parent of shape updates for autosave
+  const updateShapes = (newShapes) => {
+    setShapes(newShapes);
+    if (onShapesChange) onShapesChange(newShapes);
+  };
+
+  const pushUndoAction = (action) => {
+    myUndoStackRef.current.push(action);
+    myRedoStackRef.current = [];
+    setStackTick(t => t + 1);
+  };
+
+  const handleUndo = useCallback(() => {
+    if (isReplayMode || myUndoStackRef.current.length === 0) return;
+    const action = myUndoStackRef.current.pop();
+    myRedoStackRef.current.push(action);
+    setStackTick(t => t + 1);
+
+    if (action.type === 'ADD') {
+      setShapes((prev) => {
+        const updated = prev.filter(s => s.id !== action.shape.id);
+        if (onShapesChange) onShapesChange(updated);
+        return updated;
+      });
+      socket?.emit('delete-shape', { roomId, shapeId: action.shape.id });
+    }
+  }, [roomId, socket, onShapesChange, isReplayMode]);
+
+  const handleRedo = useCallback(() => {
+    if (isReplayMode || myRedoStackRef.current.length === 0) return;
+    const action = myRedoStackRef.current.pop();
+    myUndoStackRef.current.push(action);
+    setStackTick(t => t + 1);
+
+    if (action.type === 'ADD') {
+      setShapes((prev) => {
+        const updated = prev.some(s => s.id === action.shape.id) ? prev : [...prev, action.shape];
+        if (onShapesChange) onShapesChange(updated);
+        return updated;
+      });
+      socket?.emit('draw-end', { roomId, ...action.shape });
+    }
+  }, [roomId, socket, onShapesChange, isReplayMode]);
+
   useEffect(() => {
     const checkSize = () => {
       if (containerRef.current) {
@@ -32,7 +104,7 @@ export default function Whiteboard({ roomId, socket, users = [], onCursorMove })
         const h = containerRef.current.offsetHeight || containerRef.current.clientHeight || 600;
         setSize({ width: w, height: h });
       }
-    }; 
+    };
 
     checkSize();
     window.addEventListener('resize', checkSize);
@@ -48,9 +120,29 @@ export default function Whiteboard({ roomId, socket, users = [], onCursorMove })
     };
   }, []);
 
+  // Keyboard shortcuts listener
   useEffect(() => {
     const handleKeyDown = (e) => {
+      if (isReplayMode) return;
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+      const isCtrlOrCmd = e.ctrlKey || e.metaKey;
+
+      if (isCtrlOrCmd && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
+        }
+        return;
+      }
+
+      if (isCtrlOrCmd && e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        handleRedo();
+        return;
+      }
       
       switch(e.key.toLowerCase()) {
         case 'p':
@@ -76,7 +168,7 @@ export default function Whiteboard({ roomId, socket, users = [], onCursorMove })
     
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [handleUndo, handleRedo, isReplayMode]);
 
   // Socket event listeners
   useEffect(() => {
@@ -85,38 +177,58 @@ export default function Whiteboard({ roomId, socket, users = [], onCursorMove })
     const handleDrawStart = (newShape) => {
       setShapes((prev) => {
         if (prev.some(s => s.id === newShape.id)) return prev;
-        return [...prev, newShape];
+        const updated = [...prev, newShape];
+        if (onShapesChange) onShapesChange(updated);
+        return updated;
       });
     };
 
     const handleDrawing = (updatedShape) => {
       setShapes((prev) => {
         const index = prev.findIndex(s => s.id === updatedShape.id);
+        let newShapes;
         if (index !== -1) {
-          const newShapes = [...prev];
+          newShapes = [...prev];
           newShapes[index] = updatedShape;
-          return newShapes;
         } else {
-          return [...prev, updatedShape];
+          newShapes = [...prev, updatedShape];
         }
+        return newShapes;
       });
     };
 
     const handleDrawEnd = (finalShape) => {
       setShapes((prev) => {
         const index = prev.findIndex(s => s.id === finalShape.id);
+        let newShapes;
         if (index !== -1) {
-          const newShapes = [...prev];
+          newShapes = [...prev];
           newShapes[index] = finalShape;
-          return newShapes;
         } else {
-          return [...prev, finalShape];
+          newShapes = [...prev, finalShape];
         }
+        if (onShapesChange) onShapesChange(newShapes);
+        return newShapes;
+      });
+    };
+
+    const handleDeleteShape = ({ shapeId }) => {
+      setShapes((prev) => {
+        const updated = prev.filter(s => s.id !== shapeId);
+        if (onShapesChange) onShapesChange(updated);
+        return updated;
       });
     };
 
     const handleClearCanvas = () => {
-      setShapes([]);
+      updateShapes([]);
+    };
+
+    const handleSyncShapes = (data) => {
+      if (data && Array.isArray(data.shapes)) {
+        setShapes(data.shapes);
+        if (onShapesChange) onShapesChange(data.shapes);
+      }
     };
 
     const handleCursorMove = (data) => {
@@ -134,17 +246,30 @@ export default function Whiteboard({ roomId, socket, users = [], onCursorMove })
       });
     };
 
-    const handleInitialShapes = (initialShapes) => {
-      if (Array.isArray(initialShapes)) {
-        setShapes(initialShapes);
+    const handleInitialShapes = (initialShapesData) => {
+      if (Array.isArray(initialShapesData)) {
+        setShapes(initialShapesData);
+        if (onShapesChange) onShapesChange(initialShapesData);
       }
     };
+
+    socket.off('initial-shapes', handleInitialShapes);
+    socket.off('draw-start', handleDrawStart);
+    socket.off('drawing', handleDrawing);
+    socket.off('draw-end', handleDrawEnd);
+    socket.off('delete-shape', handleDeleteShape);
+    socket.off('clear-canvas', handleClearCanvas);
+    socket.off('sync-shapes', handleSyncShapes);
+    socket.off('cursor-move', handleCursorMove);
+    socket.off('user-left', handleUserLeft);
 
     socket.on('initial-shapes', handleInitialShapes);
     socket.on('draw-start', handleDrawStart);
     socket.on('drawing', handleDrawing);
     socket.on('draw-end', handleDrawEnd);
+    socket.on('delete-shape', handleDeleteShape);
     socket.on('clear-canvas', handleClearCanvas);
+    socket.on('sync-shapes', handleSyncShapes);
     socket.on('cursor-move', handleCursorMove);
     socket.on('user-left', handleUserLeft);
 
@@ -153,29 +278,36 @@ export default function Whiteboard({ roomId, socket, users = [], onCursorMove })
       socket.off('draw-start', handleDrawStart);
       socket.off('drawing', handleDrawing);
       socket.off('draw-end', handleDrawEnd);
+      socket.off('delete-shape', handleDeleteShape);
       socket.off('clear-canvas', handleClearCanvas);
+      socket.off('sync-shapes', handleSyncShapes);
       socket.off('cursor-move', handleCursorMove);
       socket.off('user-left', handleUserLeft);
     };
-  }, [socket]);
+  }, [socket, onShapesChange]);
 
   const handleClear = () => {
-    setShapes([]);
+    if (isReplayMode) return;
+    updateShapes([]);
     socket?.emit('clear-canvas', { roomId });
   };
 
   const handleMouseDown = (e) => {
-    if (textInput.visible) return;
+    if (isReplayMode) return;
+    if (textInput.visible) {
+      if (textInput.text.trim()) {
+        handleTextSubmit();
+      } else {
+        setTextInput({ visible: false, x: 0, y: 0, screenX: 0, screenY: 0, text: '' });
+      }
+      if (activeTool === 'text') return;
+    }
 
     const pos = e.target.getStage().getPointerPosition();
     if (!pos) return;
 
     if (activeTool === 'text') {
-      // Delay showing the text input until after the Konva mouse event completes.
-      // This avoids the text field losing focus immediately when created during the mouse down event.
-      setTimeout(() => {
-        setTextInput({ visible: true, x: pos.x, y: pos.y, text: '' });
-      }, 0);
+      setTextInput({ visible: true, x: pos.x, y: pos.y, text: '' });
       return;
     }
 
@@ -225,7 +357,8 @@ export default function Whiteboard({ roomId, socket, users = [], onCursorMove })
 
     if (onCursorMove) onCursorMove(point);
     
-    // Broadcast cursor position
+    if (isReplayMode) return;
+
     socket?.emit('cursor-move', { roomId, x: point.x, y: point.y });
 
     if (!isDrawing || activeTool === 'text' || !currentShapeRef.current) return;
@@ -237,7 +370,6 @@ export default function Whiteboard({ roomId, socket, users = [], onCursorMove })
       const lastX = pts[pts.length - 2];
       const lastY = pts[pts.length - 1];
 
-      // Smoothness filter: only add point if distance is >= 2px
       const dist = Math.hypot(point.x - lastX, point.y - lastY);
       if (dist < 2) return;
 
@@ -249,7 +381,6 @@ export default function Whiteboard({ roomId, socket, users = [], onCursorMove })
       currentShape.height = Math.abs(point.y - currentShape.startY);
     }
 
-    // Update local state for immediate re-render
     setShapes((prev) => {
       const index = prev.findIndex(s => s.id === currentShape.id);
       if (index === -1) return [...prev, { ...currentShape }];
@@ -258,38 +389,55 @@ export default function Whiteboard({ roomId, socket, users = [], onCursorMove })
       return newShapes;
     });
 
-    // Broadcast live drawing shape to other clients
     socket?.emit('drawing', { roomId, ...currentShape });
   };
 
   const handleMouseUp = () => {
-    if (!isDrawing) return;
+    if (isReplayMode || !isDrawing) return;
     setIsDrawing(false);
 
     if (currentShapeRef.current) {
       const finalShape = { ...currentShapeRef.current };
       socket?.emit('draw-end', { roomId, ...finalShape });
+      
+      setShapes((prev) => {
+        const newShapes = prev.map(s => s.id === finalShape.id ? finalShape : s);
+        if (!newShapes.some(s => s.id === finalShape.id)) newShapes.push(finalShape);
+        if (onShapesChange) onShapesChange(newShapes);
+        return newShapes;
+      });
+
+      pushUndoAction({ type: 'ADD', shape: finalShape });
       currentShapeRef.current = null;
     }
     setCurrentShapeId(null);
   };
 
   const handleTextSubmit = () => {
-    if (textInput.text.trim()) {
-      const newShape = {
-        type: 'text',
-        id: uuidv4(),
-        x: textInput.x,
-        y: textInput.y,
-        text: textInput.text,
-        fontSize: 20 + strokeWidth * 2,
-        fill: color,
-      };
-      setShapes((prev) => [...prev, newShape]);
-      socket?.emit('draw-start', { roomId, ...newShape });
-      socket?.emit('draw-end', { roomId, ...newShape });
-    }
-    setTextInput({ visible: false, x: 0, y: 0, text: '' });
+    if (isReplayMode) return;
+    setTextInput(prev => {
+      if (!prev.visible) return prev;
+      if (prev.text.trim()) {
+        const newShape = {
+          type: 'text',
+          id: uuidv4(),
+          x: prev.x,
+          y: prev.y,
+          text: prev.text,
+          fontSize: 20 + strokeWidth * 2,
+          fill: color,
+        };
+        setShapes(prevShapes => {
+          const updated = [...prevShapes, newShape];
+          if (onShapesChange) onShapesChange(updated);
+          return updated;
+        });
+        pushUndoAction({ type: 'ADD', shape: newShape });
+        socket?.emit('draw-start', { roomId, ...newShape });
+        socket?.emit('draw-end', { roomId, ...newShape });
+      }
+      return { visible: false, x: 0, y: 0, screenX: 0, screenY: 0, text: '' };
+    });
   };
 
   return (
@@ -301,136 +449,179 @@ export default function Whiteboard({ roomId, socket, users = [], onCursorMove })
         backgroundSize: '24px 24px',
       }}
     >
-      <Toolbar 
-        activeTool={activeTool} 
-        setActiveTool={setActiveTool} 
-        color={color}
-        setColor={setColor}
-        strokeWidth={strokeWidth}
-        setStrokeWidth={setStrokeWidth}
-        onClear={handleClear}
-      />
-      <Stage 
-        width={size.width} 
-        height={size.height}
-        style={{ cursor: activeTool === 'text' ? 'text' : activeTool === 'eraser' ? 'cell' : 'crosshair' }}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
-        onTouchStart={handleMouseDown}
-        onTouchMove={handleMouseMove}
-        onTouchEnd={handleMouseUp}
-      >
-        <Layer>
-          {shapes.map((shape) => {
-            if (shape.type === 'line') {
-              return (
-                <Line
-                  key={shape.id}
-                  points={shape.points}
-                  stroke={shape.stroke}
-                  strokeWidth={shape.strokeWidth}
-                  tension={0.35}
-                  lineCap="round"
-                  lineJoin="round"
-                  perfectDrawEnabled={false}
-                  shadowForStrokeEnabled={false}
-                />
-              );
-            }
-            if (shape.type === 'rect') {
-              return (
-                <Rect
-                  key={shape.id}
-                  x={shape.x}
-                  y={shape.y}
-                  width={shape.width}
-                  height={shape.height}
-                  stroke={shape.stroke}
-                  strokeWidth={shape.strokeWidth}
-                  cornerRadius={4}
-                />
-              );
-            }
-            if (shape.type === 'text') {
-              return (
-                <Text
-                  key={shape.id}
-                  x={shape.x}
-                  y={shape.y}
-                  text={shape.text}
-                  fontSize={shape.fontSize}
-                  fill={shape.fill}
-                  fontFamily="sans-serif"
-                />
-              );
-            }
-            return null;
-          })}
-          
-          {Object.entries(cursors).map(([userId, pos]) => {
-            const userObj = (users || []).find(u => u?.id === userId || u?.socketId === userId);
-            const userName = pos?.userName || userObj?.name || 'User';
-            const userColor = getColorForUser(userId);
-            return (
-              <React.Fragment key={userId}>
-                <Line
-                  points={[pos.x, pos.y, pos.x + 12, pos.y + 16, pos.x + 8, pos.y + 16, pos.x + 4, pos.y + 22]}
-                  closed={true}
-                  fill={userColor}
-                  stroke="#ffffff"
-                  strokeWidth={1}
-                />
-                <Rect
-                  x={pos.x + 12}
-                  y={pos.y + 20}
-                  width={userName.length * 8 + 12}
-                  height={22}
-                  fill={userColor}
-                  cornerRadius={4}
-                />
-                <Text
-                  x={pos.x + 16}
-                  y={pos.y + 24}
-                  text={userName}
-                  fontSize={12}
-                  fill="#ffffff"
-                  fontStyle="bold"
-                />
-              </React.Fragment>
-            );
-          })}
-        </Layer>
-      </Stage>
+      {/* Maximize / Restore Button */}
+      {onToggleMaximize && (
+        <button
+          onClick={onToggleMaximize}
+          title={panelMode === 'whiteboard-max' ? 'Restore Split View' : 'Maximize Whiteboard'}
+          className="absolute top-3 right-3 z-30 bg-[#1A1A1A]/90 hover:bg-[#2A2A2A] border border-white/10 text-gray-300 hover:text-white p-2 rounded-xl transition-all cursor-pointer shadow-lg flex items-center gap-1.5 text-xs font-semibold select-none"
+        >
+          {panelMode === 'whiteboard-max' ? (
+            <>
+              <Minimize2 size={15} className="text-indigo-400" />
+              <span className="hidden sm:inline">Restore</span>
+            </>
+          ) : (
+            <>
+              <Maximize2 size={15} className="text-indigo-400" />
+              <span className="hidden sm:inline">Maximize</span>
+            </>
+          )}
+        </button>
+      )}
 
+      {!isReplayMode && (
+        <Toolbar 
+          activeTool={activeTool} 
+          setActiveTool={(toolId) => {
+            if (textInput.visible) {
+              handleTextSubmit();
+            }
+            setActiveTool(toolId);
+          }} 
+          color={color}
+          setColor={setColor}
+          strokeWidth={strokeWidth}
+          setStrokeWidth={setStrokeWidth}
+          onClear={handleClear}
+          onUndo={handleUndo}
+          onRedo={handleRedo}
+          canUndo={myUndoStackRef.current.length > 0}
+          canRedo={myRedoStackRef.current.length > 0}
+        />
+      )}
+
+      {/* Floating Input for Text Tool */}
       {textInput.visible && (
         <input
-          autoFocus
+          ref={textInputRef}
+          type="text"
           value={textInput.text}
           onChange={(e) => setTextInput(prev => ({ ...prev, text: e.target.value }))}
-          onBlur={handleTextSubmit}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') handleTextSubmit();
-            if (e.key === 'Escape') setTextInput({ visible: false, x: 0, y: 0, text: '' });
+            if (e.key === 'Enter') {
+              handleTextSubmit();
+            } else if (e.key === 'Escape') {
+              setTextInput({ visible: false, x: 0, y: 0, text: '' });
+            }
           }}
+          onBlur={handleTextSubmit}
+          autoFocus
+          placeholder="Type text..."
           style={{
             position: 'absolute',
-            top: textInput.y,
-            left: textInput.x,
+            left: `${textInput.x}px`,
+            top: `${textInput.y}px`,
             color: color,
             fontSize: `${20 + strokeWidth * 2}px`,
-            fontFamily: 'sans-serif',
-            background: 'transparent',
-            border: `1px dashed ${color}`,
+            background: 'rgba(10, 10, 10, 0.85)',
+            border: '1.5px dashed #6366F1',
+            borderRadius: '6px',
             outline: 'none',
-            padding: '0 4px',
-            margin: 0,
-            minWidth: '60px',
-            zIndex: 30
+            zIndex: 40,
+            padding: '2px 8px',
+            fontFamily: 'sans-serif'
           }}
         />
       )}
+
+      {/* Stage */}
+      <div style={{ pointerEvents: isReplayMode ? 'none' : 'auto', position: 'absolute', inset: 0 }}>
+        <Stage 
+          ref={stageRef}
+          width={size.width} 
+          height={size.height}
+          style={{ cursor: isReplayMode ? 'default' : activeTool === 'text' ? 'text' : activeTool === 'eraser' ? 'cell' : 'crosshair' }}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseUp}
+          onTouchStart={handleMouseDown}
+          onTouchMove={handleMouseMove}
+          onTouchEnd={handleMouseUp}
+        >
+          <Layer>
+            {activeShapes.map((shape) => {
+              if (shape.type === 'line') {
+                return (
+                  <Line
+                    key={shape.id}
+                    points={shape.points}
+                    stroke={shape.stroke}
+                    strokeWidth={shape.strokeWidth}
+                    tension={0.35}
+                    lineCap="round"
+                    lineJoin="round"
+                    perfectDrawEnabled={false}
+                    shadowForStrokeEnabled={false}
+                  />
+                );
+              }
+              if (shape.type === 'rect') {
+                return (
+                  <Rect
+                    key={shape.id}
+                    x={shape.x}
+                    y={shape.y}
+                    width={shape.width}
+                    height={shape.height}
+                    stroke={shape.stroke}
+                    strokeWidth={shape.strokeWidth}
+                    cornerRadius={4}
+                  />
+                );
+              }
+              if (shape.type === 'text') {
+                return (
+                  <Text
+                    key={shape.id}
+                    x={shape.x}
+                    y={shape.y}
+                    text={shape.text}
+                    fontSize={shape.fontSize}
+                    fill={shape.fill}
+                    fontFamily="sans-serif"
+                  />
+                );
+              }
+              return null;
+            })}
+            
+            {!isReplayMode && Object.entries(cursors).map(([userId, pos]) => {
+              const userObj = (users || []).find(u => u?.id === userId || u?.socketId === userId);
+              const userName = pos?.userName || userObj?.name || 'User';
+              const userColor = getColorForUser(userId);
+              return (
+                <React.Fragment key={userId}>
+                  <Line
+                    points={[pos.x, pos.y, pos.x + 12, pos.y + 16, pos.x + 8, pos.y + 16, pos.x + 4, pos.y + 22]}
+                    closed={true}
+                    fill={userColor}
+                    stroke="#ffffff"
+                    strokeWidth={1}
+                  />
+                  <Rect
+                    x={pos.x + 12}
+                    y={pos.y + 20}
+                    width={userName.length * 8 + 12}
+                    height={22}
+                    fill={userColor}
+                    cornerRadius={4}
+                  />
+                  <Text
+                    x={pos.x + 16}
+                    y={pos.y + 24}
+                    text={userName}
+                    fontSize={12}
+                    fill="#ffffff"
+                    fontStyle="bold"
+                  />
+                </React.Fragment>
+              );
+            })}
+          </Layer>
+        </Stage>
+      </div>
     </div>
   );
 }
