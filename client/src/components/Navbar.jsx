@@ -69,7 +69,7 @@ export default function Navbar({
         </div>
 
         <div className="flex items-center gap-3">
-          {/* Notification Center Button */}
+          {/* Notifica tion Center Button */}
           <button
             onClick={() => setIsInvitationCenterOpen(true)}
             className="relative p-2 rounded-xl text-gray-300 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 transition-all cursor-pointer"
