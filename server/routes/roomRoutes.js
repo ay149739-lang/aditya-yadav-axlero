@@ -10,7 +10,7 @@ const {
   deleteRoomController,
   leaveRoomController
 } = require('../controllers/roomController');
-const{
+const {
   inviteUser,
   getPendingInvitations,
   getNotificationsController,
