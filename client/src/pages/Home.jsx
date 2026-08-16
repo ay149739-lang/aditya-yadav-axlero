@@ -121,7 +121,28 @@ export default function Home() {
       if (data.hasAccess) {
         navigate(`/room/${id}`);
       } else {
-        toast.error(data.message || 'You are not invited to this room');
+        toast.error(data.message || 'The room owner is currently offline. You can only join when the owner is inside the room.');
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error('Could not verify room access');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleJoinJoinedRoom = async (roomId) => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/${roomId}/access`, {
+        headers: getAuthHeaders()
+      });
+      const data = await res.json();
+
+      if (data.hasAccess) {
+        navigate(`/room/${roomId}`);
+      } else {
+        toast.error(data.message || 'The room owner is currently offline. You can only join when the owner is inside the room.');
       }
     } catch (err) {
       console.error(err);
@@ -592,7 +613,7 @@ export default function Home() {
                     {/* Action buttons for Member */}
                     <div className="grid grid-cols-2 gap-2 pt-3 border-t border-white/5">
                       <button
-                        onClick={() => navigate(`/room/${room.roomId}`)}
+                        onClick={() => handleJoinJoinedRoom(room.roomId)}
                         className="w-full bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold py-2 rounded-lg transition-all flex items-center justify-center gap-1 cursor-pointer"
                       >
                         <LogIn size={13} />

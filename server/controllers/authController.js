@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const User = require('../models/User');
 const { signToken, hashPassword, verifyPassword } = require('../utils/jwt');
 const { v4: uuidv4 } = require('uuid');
@@ -43,6 +44,29 @@ const saveUsersToFile = () => {
   }
 };
 
+const generateRecoveryCode = () => {
+  const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  const getBlock = (len) => {
+    let res = '';
+    for (let i = 0; i < len; i++) {
+      let randVal = Math.floor(Math.random() * chars.length);
+      try {
+        if (crypto && typeof crypto.randomBytes === 'function') {
+          const buf = crypto.randomBytes(1);
+          if (buf && buf.length > 0) {
+            randVal = buf[0] % chars.length;
+          }
+        }
+      } catch (e) {
+        randVal = Math.floor(Math.random() * chars.length);
+      }
+      res += chars[randVal];
+    }
+    return res;
+  };
+  return `SYNC-${getBlock(4)}-${getBlock(4)}-${getBlock(4)}`;
+};
+
 // POST /api/auth/register
 const register = async (req, res) => {
   try {
@@ -81,6 +105,8 @@ const register = async (req, res) => {
     }
 
     const passwordHash = hashPassword(password);
+    const recoveryCode = generateRecoveryCode();
+    const recoveryCodeHash = hashPassword(recoveryCode);
     const userId = uuidv4();
 
     let savedUserData = {
@@ -90,6 +116,7 @@ const register = async (req, res) => {
       displayName: name,
       email: cleanEmail,
       passwordHash,
+      recoveryCodeHash,
       color
     };
 
@@ -99,6 +126,7 @@ const register = async (req, res) => {
         displayName: name,
         email: cleanEmail,
         passwordHash,
+        recoveryCodeHash,
         color
       });
       savedUserData.id = newUser._id.toString();
@@ -131,7 +159,8 @@ const register = async (req, res) => {
         name,
         email: cleanEmail,
         color
-      }
+      },
+      recoveryCode
     });
   } catch (error) {
     console.error('Registration error:', error);
@@ -334,10 +363,98 @@ const findUserById = async (userId) => {
   return null;
 };
 
+// POST /api/auth/reset-password
+const resetPassword = async (req, res) => {
+  try {
+    const { identifier, recoveryCode, newPassword } = req.body;
+
+    if (!identifier || !recoveryCode || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid recovery credentials.'
+      });
+    }
+
+    const cleanIdentifier = identifier.trim().toLowerCase();
+    const cleanCode = recoveryCode.trim();
+
+    if (!cleanIdentifier || !cleanCode || !newPassword.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid recovery credentials.'
+      });
+    }
+
+    loadUsersFromFile();
+
+    let userRecord = null;
+
+    if (User && User.db && User.db.readyState === 1) {
+      const dbUser = await User.findOne({
+        $or: [{ username: cleanIdentifier }, { email: cleanIdentifier }]
+      });
+      if (dbUser) {
+        userRecord = dbUser;
+      }
+    }
+
+    if (!userRecord && usersMap.has(cleanIdentifier)) {
+      userRecord = usersMap.get(cleanIdentifier);
+    }
+
+    if (!userRecord || (!userRecord.recoveryCodeHash && !userRecord.recoveryHash)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid recovery credentials.'
+      });
+    }
+
+    const storedRecoveryHash = userRecord.recoveryCodeHash || userRecord.recoveryHash;
+    const isCodeMatch = verifyPassword(cleanCode, storedRecoveryHash);
+
+    if (!isCodeMatch) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid recovery credentials.'
+      });
+    }
+
+    const newPasswordHash = hashPassword(newPassword);
+
+    if (User && User.db && User.db.readyState === 1 && userRecord._id) {
+      await User.findByIdAndUpdate(userRecord._id, { passwordHash: newPasswordHash });
+    }
+
+    const id = userRecord.id || userRecord._id?.toString();
+    if (userRecord.username) {
+      const existingInMap = usersMap.get(userRecord.username) || userRecord;
+      existingInMap.passwordHash = newPasswordHash;
+      usersMap.set(userRecord.username, existingInMap);
+      if (existingInMap.email) usersMap.set(existingInMap.email, existingInMap);
+      if (id) usersMap.set(id, existingInMap);
+    }
+    saveUsersToFile();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Password updated successfully.'
+    });
+  } catch (error) {
+    console.error('Password reset error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Password reset failed',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   register,
   login,
   getMe,
+  resetPassword,
   searchUserByQuery,
   findUserById
 };
+

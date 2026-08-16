@@ -73,6 +73,8 @@ const saveToFileImmediate = () => {
         boardData: room.boardData || [],
         codeData: room.codeData !== undefined ? room.codeData : DEFAULT_CODE,
         language: room.language || 'javascript',
+        files: Array.isArray(room.files) ? room.files : [],
+        activeFileId: room.activeFileId || null,
         updatedAt: new Date().toISOString()
       };
     }
@@ -111,7 +113,9 @@ const getRoom = async (roomId) => {
           isPublic: Boolean(dbRoom.isPublic),
           boardData: dbRoom.boardData || [],
           codeData: dbRoom.codeData !== undefined ? dbRoom.codeData : DEFAULT_CODE,
-          language: dbRoom.language || 'javascript'
+          language: dbRoom.language || 'javascript',
+          files: Array.isArray(dbRoom.files) ? dbRoom.files : [],
+          activeFileId: dbRoom.activeFileId || null
         };
         roomsCache.set(roomId, roomData);
       }
@@ -132,7 +136,9 @@ const getRoom = async (roomId) => {
       owner,
       members: Array.from(membersSet),
       pendingInvites: (Array.isArray(cached.pendingInvites) ? cached.pendingInvites : []).map(m => m.toString()),
-      invitedUsers: (Array.isArray(cached.invitedUsers) ? cached.invitedUsers : []).map(m => m.toString())
+      invitedUsers: (Array.isArray(cached.invitedUsers) ? cached.invitedUsers : []).map(m => m.toString()),
+      files: Array.isArray(cached.files) ? cached.files : [],
+      activeFileId: cached.activeFileId || null
     };
   }
 
@@ -177,6 +183,8 @@ const saveRoom = async (roomId, data) => {
   const boardData = Array.isArray(data.boardData) ? data.boardData : (existing.boardData || []);
   const codeData = data.codeData !== undefined ? data.codeData : (existing.codeData !== undefined ? existing.codeData : DEFAULT_CODE);
   const language = data.language || existing.language || 'javascript';
+  const files = Array.isArray(data.files) ? data.files : (Array.isArray(existing.files) ? existing.files : []);
+  const activeFileId = data.activeFileId !== undefined ? data.activeFileId : (existing.activeFileId || null);
 
   const roomToSave = {
     roomId,
@@ -189,7 +197,9 @@ const saveRoom = async (roomId, data) => {
     isPublic,
     boardData,
     codeData,
-    language
+    language,
+    files,
+    activeFileId
   };
 
   // Update in-memory cache
@@ -241,6 +251,8 @@ const getAllRooms = async () => {
           boardData: dbRoom.boardData || [],
           codeData: dbRoom.codeData !== undefined ? dbRoom.codeData : DEFAULT_CODE,
           language: dbRoom.language || 'javascript',
+          files: Array.isArray(dbRoom.files) ? dbRoom.files : [],
+          activeFileId: dbRoom.activeFileId || null,
           updatedAt: dbRoom.updatedAt || new Date()
         });
       }

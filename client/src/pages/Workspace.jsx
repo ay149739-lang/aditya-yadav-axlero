@@ -14,6 +14,8 @@ import { Layers, ShieldAlert } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { fetchRoomData, saveRoomData } from '../services/api';
 import { fetchSnapshots } from '../services/replayApi';
+import JSZip from 'jszip';
+import { v4 as uuidv4 } from 'uuid';
 
 // Helper to deduplicate active user list by user ID / username
 const dedupeUsers = (userList) => {
@@ -72,8 +74,14 @@ export default function Workspace() {
   const [snapshots, setSnapshots] = useState([]);
   const [isReplayMode, setIsReplayMode] = useState(false);
   const [replayShapes, setReplayShapes] = useState(null);
+  const [replayFiles, setReplayFiles] = useState(null);
+  const [replayActiveFileId, setReplayActiveFileId] = useState(null);
   const [replayCode, setReplayCode] = useState(null);
   const [replayLanguage, setReplayLanguage] = useState(null);
+  const [replayExecutionOutput, setReplayExecutionOutput] = useState(null);
+  // Tracks the most recently selected replay snapshot so handleExitReplay can
+  // commit the final recorded state into live workspace (Bug 4 requirement).
+  const lastReplaySnapshotRef = useRef(null);
 
   // Autosave and Room Recovery State
   const [saveStatus, setSaveStatus] = useState('Saved');
@@ -126,6 +134,15 @@ export default function Workspace() {
     }
   }, [user?.name, user?.username, roomId]);
 
+  // Workspace Files state
+  const [files, setFiles] = useState([]);
+  const [activeFileId, setActiveFileId] = useState(null);
+  const filesRef = useRef([]);
+
+  useEffect(() => {
+    filesRef.current = files;
+  }, [files]);
+
   // Load room persistence & validate room access on initial mount
   useEffect(() => {
     if (!roomId || !authUser) return; // Wait until auth user is resolved
@@ -159,12 +176,19 @@ export default function Workspace() {
         setInitialLanguage(data.language);
         languageRef.current = data.language;
       }
+
+      if (Array.isArray(data.files) && data.files.length > 0) {
+        setFiles(data.files);
+        setActiveFileId(null);
+      } else {
+        setFiles([]);
+        setActiveFileId(null);
+      }
+
       if (data.owner) {
-        // data.owner = owner User ID; data.ownerName = display name
         const displayName = data.ownerName || data.owner;
         ownerNameRef.current = displayName;
         setOwnerName(displayName);
-        // Compare by User ID and username — set strictly to true or false
         const currentUserId = (authUser?.id || authUser?._id)?.toString();
         const currentUsername = (authUser?.username || authUser?.name || '').toLowerCase();
         const roomOwner = data.owner ? data.owner.toString() : '';
@@ -180,7 +204,6 @@ export default function Workspace() {
       const list = await fetchSnapshots(roomId);
       if (isMounted && Array.isArray(list) && list.length > 0) {
         setSnapshots((prev) => {
-          // Merge server list with any real-time ones already in state
           const existingIds = new Set(prev.map(s => s.snapshotId));
           const incoming = list.filter(s => !existingIds.has(s.snapshotId));
           if (incoming.length === 0 && list.length === prev.length) return prev;
@@ -193,7 +216,6 @@ export default function Workspace() {
     loadRoomState();
     loadSnapshots();
 
-    // Poll snapshots every 10s to keep timeline fresh
     const snapshotInterval = setInterval(loadSnapshots, 10000);
 
     return () => {
@@ -210,10 +232,13 @@ export default function Workspace() {
     setSaveStatus('Saving...');
 
     try {
+      const activeFile = filesRef.current.find(f => f.id === activeFileId);
       const res = await saveRoomData(roomId, {
         boardData: shapesRef.current,
-        codeData: codeRef.current,
-        language: languageRef.current
+        codeData: activeFile ? activeFile.content : codeRef.current,
+        language: languageRef.current,
+        files: filesRef.current,
+        activeFileId
       });
 
       if (res && res.success) {
@@ -308,12 +333,187 @@ export default function Workspace() {
   }, [socket]);
 
 
-  const usersRef = useRef([]);
-  useEffect(() => {
-    usersRef.current = users;
-  }, [users]);
+  // File Manager Handlers
+  const handleSelectFile = useCallback((fileId) => {
+    setActiveFileId(fileId);
+    const targetFile = filesRef.current.find(f => f.id === fileId);
+    if (targetFile) {
+      const openedBy = authUser?.name || authUser?.username || 'Collaborator';
+      socket?.emit('file-open', { roomId, fileId, fileName: targetFile.name, openedBy });
+    }
+  }, [socket, roomId, authUser]);
 
-  // Handle socket permission & presence events
+  const detectFileLanguage = (filename = '') => {
+    const ext = filename.split('.').pop()?.toLowerCase() || '';
+    switch (ext) {
+      case 'py': return 'python';
+      case 'cpp': case 'cc': case 'cxx': case 'h': case 'hpp': return 'cpp';
+      case 'c': return 'c';
+      case 'java': return 'java';
+      case 'js': case 'jsx': return 'javascript';
+      case 'ts': case 'tsx': return 'typescript';
+      case 'html': return 'html';
+      case 'css': return 'css';
+      case 'json': return 'json';
+      case 'md': return 'markdown';
+      case 'txt': return 'plaintext';
+      case 'cs': return 'csharp';
+      case 'go': return 'go';
+      case 'rs': return 'rust';
+      case 'php': return 'php';
+      case 'sql': return 'sql';
+      case 'xml': return 'xml';
+      case 'sh': case 'bash': return 'shell';
+      default: return 'plaintext';
+    }
+  };
+
+  const handleCreateFile = useCallback((filename) => {
+    if (!filename || !filename.trim()) return;
+    const cleanName = filename.trim();
+    const ext = cleanName.includes('.') ? cleanName.split('.').pop().toLowerCase() : '';
+    const detectedLang = detectFileLanguage(cleanName);
+
+    const newFile = {
+      id: `file-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+      name: cleanName,
+      extension: ext,
+      language: detectedLang,
+      content: '',
+      creatorId: (authUser?.id || authUser?._id || '').toString(),
+      creatorName: authUser?.name || authUser?.username || 'Collaborator',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    setFiles(prev => {
+      const updated = [...prev.filter(f => f.name.toLowerCase() !== cleanName.toLowerCase()), newFile];
+      return updated;
+    });
+    setActiveFileId(newFile.id);
+    isDirtyRef.current = true;
+
+    const actorName = authUser?.name || authUser?.username || 'Collaborator';
+    socket?.emit('file-create', { roomId, file: newFile, createdBy: actorName });
+  }, [authUser, roomId, socket]);
+
+  const handleUploadFile = useCallback((filename, content) => {
+    if (!filename) return;
+    const ext = filename.includes('.') ? filename.split('.').pop().toLowerCase() : '';
+    const detectedLang = detectFileLanguage(filename);
+
+    const newFile = {
+      id: `file-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+      name: filename,
+      extension: ext,
+      language: detectedLang,
+      content: content || '',
+      creatorId: (authUser?.id || authUser?._id || '').toString(),
+      creatorName: authUser?.name || authUser?.username || 'Collaborator',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    setFiles(prev => {
+      const updated = [...prev.filter(f => f.name.toLowerCase() !== filename.toLowerCase()), newFile];
+      return updated;
+    });
+    setActiveFileId(newFile.id);
+    isDirtyRef.current = true;
+
+    const actorName = authUser?.name || authUser?.username || 'Collaborator';
+    socket?.emit('file-upload', { roomId, file: newFile, uploadedBy: actorName });
+  }, [authUser, roomId, socket]);
+
+  const handleRenameFile = useCallback((fileId, newName) => {
+    if (!fileId || !newName) return;
+    const cleanName = newName.trim();
+
+    let oldName = '';
+    setFiles(prev => {
+      return prev.map(f => {
+        if (f.id === fileId) {
+          oldName = f.name;
+          return { ...f, name: cleanName, updatedAt: new Date().toISOString() };
+        }
+        return f;
+      });
+    });
+    isDirtyRef.current = true;
+
+    const actorName = authUser?.name || authUser?.username || 'Collaborator';
+    socket?.emit('file-rename', { roomId, fileId, newName: cleanName, oldName, renamedBy: actorName });
+  }, [authUser, roomId, socket]);
+
+  const handleDeleteFile = useCallback((fileId) => {
+    if (!fileId) return;
+
+    let deletedName = '';
+    setFiles(prev => {
+      const target = prev.find(f => f.id === fileId);
+      if (target) deletedName = target.name;
+      const updated = prev.filter(f => f.id !== fileId);
+      if (activeFileId === fileId) {
+        setActiveFileId(null);
+      }
+      return updated;
+    });
+    isDirtyRef.current = true;
+
+    const actorName = authUser?.name || authUser?.username || 'Collaborator';
+    socket?.emit('file-delete', { roomId, fileId, fileName: deletedName, deletedBy: actorName });
+  }, [authUser, roomId, socket, activeFileId]);
+
+  const handleFileContentChange = useCallback((fileId, newContent) => {
+    setFiles(prev => prev.map(f => f.id === fileId ? { ...f, content: newContent, updatedAt: new Date().toISOString() } : f));
+    isDirtyRef.current = true;
+    socket?.emit('file-content-change', { roomId, fileId, content: newContent, updatedBy: authUser?.name || authUser?.username || 'User' });
+  }, [roomId, socket, authUser]);
+
+  const handleDownloadFile = useCallback((file) => {
+    if (!file) return;
+    const blob = new Blob([file.content || ''], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = file.name;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    toast.success(`Downloaded "${file.name}"`);
+  }, []);
+
+  const handleDownloadProject = useCallback(async () => {
+    const currentFiles = filesRef.current || [];
+    if (currentFiles.length === 0) {
+      toast.error('No files to download in project.');
+      return;
+    }
+
+    try {
+      const zip = new JSZip();
+      currentFiles.forEach(f => {
+        zip.file(f.name, f.content || '');
+      });
+
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${roomId || 'project'}-workspace.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      toast.success(`Downloaded project ZIP (${currentFiles.length} files)`);
+    } catch (err) {
+      console.error('Project zip download error:', err);
+      toast.error('Failed to generate project ZIP');
+    }
+  }, [roomId]);
+
+  // Handle socket permission & presence & file events
   useEffect(() => {
     if (!socket || !authUser) return;
 
@@ -343,7 +543,6 @@ export default function Workspace() {
       const leftIdStr = leftId ? leftId.toString() : '';
       if (!leftIdStr) return;
 
-      // Look up user from usersRef BEFORE updating state to show toast ONCE
       const currentUsers = usersRef.current || [];
       const leftUser = currentUsers.find(
         u => u.id === leftIdStr || u.socketId === leftIdStr || u.userId === leftIdStr
@@ -366,6 +565,10 @@ export default function Workspace() {
 
     const handleNewSnapshot = (snapshot) => {
       if (!snapshot) return;
+      const myUserId = (authUser?.id || authUser?._id || '').toString();
+      if (snapshot.userId && myUserId && String(snapshot.userId) !== myUserId) {
+        return;
+      }
       setSnapshots((prev) => {
         if (prev.some(s => s.snapshotId === snapshot.snapshotId)) return prev;
         const updated = [...prev, snapshot];
@@ -373,13 +576,92 @@ export default function Workspace() {
       });
     };
 
-    // Remove any previous duplicate listeners before adding fresh ones
+    const handleFileCreated = ({ file, createdBy }) => {
+      if (!file) return;
+      setFiles(prev => {
+        if (prev.some(f => f.id === file.id)) return prev;
+        return [...prev, file];
+      });
+      const actorName = createdBy || file.creatorName || 'A collaborator';
+      toast.success(`${actorName} created ${file.name}`, { id: `file-created-${file.id}`, duration: 3500 });
+    };
+
+    const handleFileUploaded = ({ file, uploadedBy }) => {
+      if (!file) return;
+      setFiles(prev => {
+        if (prev.some(f => f.id === file.id)) return prev;
+        return [...prev, file];
+      });
+      const actorName = uploadedBy || file.creatorName || 'A collaborator';
+      toast.success(`${actorName} uploaded ${file.name}`, { id: `file-uploaded-${file.id}`, duration: 3500 });
+    };
+
+    const handleFileRenamed = ({ fileId, newName, oldName, renamedBy }) => {
+      if (!fileId || !newName) return;
+      setFiles(prev => prev.map(f => f.id === fileId ? { ...f, name: newName } : f));
+      const actorName = renamedBy || 'A collaborator';
+      toast.success(`${actorName} renamed ${oldName || 'file'} to ${newName}`, { id: `file-renamed-${fileId}`, duration: 3500 });
+    };
+
+    const handleFileDeleted = ({ fileId, fileName, deletedBy }) => {
+      if (!fileId) return;
+      setFiles(prev => {
+        const updated = prev.filter(f => f.id !== fileId);
+        setActiveFileId(curr => curr === fileId ? null : curr);
+        return updated;
+      });
+      const actorName = deletedBy || 'A collaborator';
+      toast.error(`${actorName} deleted ${fileName || 'a file'}`, { id: `file-deleted-${fileId}`, duration: 3500 });
+    };
+
+    const handleFileContentUpdated = ({ fileId, content }) => {
+      if (!fileId) return;
+      setFiles(prev => prev.map(f => f.id === fileId ? { ...f, content } : f));
+    };
+
+    const handleFileOpened = ({ fileId, fileName, openedBy }) => {
+      if (!fileName || !openedBy) return;
+      toast(`${openedBy} opened ${fileName}`, {
+        icon: '📂',
+        id: `file-opened-${fileId}-${openedBy}`,
+        duration: 3000
+      });
+    };
+
+    const handleFileRunExecuted = (data) => {
+      if (!data?.fileId) return;
+      // Merge server-authoritative file content into local files state so every
+      // participant sees the exact same content that was executed, never stale data.
+      if (Array.isArray(data.files) && data.files.length > 0) {
+        setFiles(prev => {
+          const serverMap = new Map(data.files.map(f => [f.id, f]));
+          const merged = prev.map(f => serverMap.has(f.id) ? { ...f, ...serverMap.get(f.id) } : f);
+          // add any files present on server but missing locally
+          data.files.forEach(sf => {
+            if (!merged.some(f => f.id === sf.id)) merged.push(sf);
+          });
+          return merged;
+        });
+      } else if (data.code !== undefined) {
+        // Fallback: update just the executed file's content
+        setFiles(prev => prev.map(f => f.id === data.fileId ? { ...f, content: data.code, name: data.fileName || f.name } : f));
+      }
+      setActiveFileId(data.fileId);
+    };
+
     socket.off('access-denied', handleAccessDenied);
     socket.off('room-data', handleRoomData);
     socket.off('user-joined', handleUserJoined);
     socket.off('user-left', handleUserLeft);
     socket.off('users-updated', handleUsersUpdated);
     socket.off('new-snapshot', handleNewSnapshot);
+    socket.off('file-created', handleFileCreated);
+    socket.off('file-uploaded', handleFileUploaded);
+    socket.off('file-renamed', handleFileRenamed);
+    socket.off('file-deleted', handleFileDeleted);
+    socket.off('file-content-updated', handleFileContentUpdated);
+    socket.off('file-opened', handleFileOpened);
+    socket.off('file-run-executed', handleFileRunExecuted);
 
     socket.on('access-denied', handleAccessDenied);
     socket.on('room-data', handleRoomData);
@@ -387,6 +669,13 @@ export default function Workspace() {
     socket.on('user-left', handleUserLeft);
     socket.on('users-updated', handleUsersUpdated);
     socket.on('new-snapshot', handleNewSnapshot);
+    socket.on('file-created', handleFileCreated);
+    socket.on('file-uploaded', handleFileUploaded);
+    socket.on('file-renamed', handleFileRenamed);
+    socket.on('file-deleted', handleFileDeleted);
+    socket.on('file-content-updated', handleFileContentUpdated);
+    socket.on('file-opened', handleFileOpened);
+    socket.on('file-run-executed', handleFileRunExecuted);
 
     return () => {
       socket.off('access-denied', handleAccessDenied);
@@ -395,24 +684,53 @@ export default function Workspace() {
       socket.off('user-left', handleUserLeft);
       socket.off('users-updated', handleUsersUpdated);
       socket.off('new-snapshot', handleNewSnapshot);
+      socket.off('file-created', handleFileCreated);
+      socket.off('file-uploaded', handleFileUploaded);
+      socket.off('file-renamed', handleFileRenamed);
+      socket.off('file-deleted', handleFileDeleted);
+      socket.off('file-content-updated', handleFileContentUpdated);
+      socket.off('file-opened', handleFileOpened);
+      socket.off('file-run-executed', handleFileRunExecuted);
     };
   }, [socket, roomId, authUser?.id, navigate]);
 
   // Handle selecting snapshot in Replay Panel
   const handleSelectSnapshot = useCallback((snapshot) => {
     if (!snapshot) return;
+    lastReplaySnapshotRef.current = snapshot;
     setIsReplayMode(true);
     setReplayShapes(Array.isArray(snapshot.boardData) ? snapshot.boardData : []);
+    setReplayFiles(Array.isArray(snapshot.files) ? snapshot.files : []);
+    setReplayActiveFileId(snapshot.activeFileId !== undefined ? snapshot.activeFileId : null);
     setReplayCode(snapshot.codeData !== undefined && snapshot.codeData !== null ? snapshot.codeData : '');
-    setReplayLanguage(snapshot.language || 'javascript');
+    const activeFileSnap = Array.isArray(snapshot.files) ? snapshot.files.find(f => f.id === snapshot.activeFileId) : null;
+    const snapLang = snapshot.language || (activeFileSnap ? (activeFileSnap.language || detectFileLanguage(activeFileSnap.name)) : 'plaintext');
+    setReplayLanguage(snapLang);
+    setReplayExecutionOutput(snapshot.executionOutput || null);
   }, []);
 
   const handleExitReplay = useCallback(() => {
+    // When Replay finishes or user exits Replay, commit the final recorded snapshot state
+    // so the workspace remains exactly as the last recorded snapshot (Bug 4 requirement)
+    const lastSnap = lastReplaySnapshotRef.current;
+    if (lastSnap) {
+      if (Array.isArray(lastSnap.files)) {
+        setFiles(lastSnap.files);
+      }
+      if (lastSnap.activeFileId !== undefined) {
+        setActiveFileId(lastSnap.activeFileId);
+      }
+    }
+    lastReplaySnapshotRef.current = null;
+
     setIsReplayMode(false);
-    // Clear replay state so Whiteboard and CodeEditor revert to live data
+    // Clear replay state so Whiteboard, Sidebar, and CodeEditor revert to live data
     setReplayShapes(null);
+    setReplayFiles(null);
+    setReplayActiveFileId(null);
     setReplayCode(null);
     setReplayLanguage(null);
+    setReplayExecutionOutput(null);
   }, []);
 
   // Show loading state while auth or room access is being verified
@@ -452,6 +770,10 @@ export default function Workspace() {
     );
   }
 
+  const currentFiles = isReplayMode && replayFiles !== null ? replayFiles : files;
+  const currentActiveFileId = isReplayMode ? replayActiveFileId : activeFileId;
+  const currentActiveFile = currentFiles.find(f => f.id === currentActiveFileId) || null;
+
   return (
     <div className="h-screen w-screen flex flex-col overflow-hidden bg-[#0A0A0A] select-none">
       <Navbar
@@ -468,7 +790,20 @@ export default function Workspace() {
       <div className="flex flex-1 overflow-hidden relative">
         {/* Collapsible Sidebar */}
         {showSidebar && (
-          <Sidebar roomId={roomId} users={displayUsers} currentUser={user} />
+          <Sidebar
+            roomId={roomId}
+            users={displayUsers}
+            currentUser={user}
+            files={currentFiles}
+            activeFileId={currentActiveFileId}
+            onSelectFile={isReplayMode ? undefined : handleSelectFile}
+            onCreateFile={isReplayMode ? undefined : handleCreateFile}
+            onUploadFile={isReplayMode ? undefined : handleUploadFile}
+            onRenameFile={isReplayMode ? undefined : handleRenameFile}
+            onDeleteFile={isReplayMode ? undefined : handleDeleteFile}
+            onDownloadFile={handleDownloadFile}
+            onDownloadProject={handleDownloadProject}
+          />
         )}
 
         {/* Main split / maximized layout */}
@@ -507,11 +842,18 @@ export default function Workspace() {
               roomId={roomId}
               socket={socket}
               currentUser={user}
+              activeFile={currentActiveFile}
+              onCodeChange={(newCode) => {
+                if (activeFileId && !isReplayMode) {
+                  handleFileContentChange(activeFileId, newCode);
+                }
+              }}
+              onDownloadFile={handleDownloadFile}
               initialCode={initialCode}
               initialLanguage={initialLanguage}
-              onCodeChange={handleCodeChange}
               replayCode={replayCode}
               replayLanguage={replayLanguage}
+              replayExecutionOutput={replayExecutionOutput}
               isReplayMode={isReplayMode}
               panelMode={panelMode}
               onToggleMaximize={() => handleToggleMaximize('code')}

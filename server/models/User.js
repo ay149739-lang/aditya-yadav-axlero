@@ -33,6 +33,10 @@ if (mongoose) {
     color: {
       type: String,
       default: '#6366F1'
+    },
+    recoveryCodeHash: {
+      type: String,
+      required: true
     }
   }, {
     timestamps: true

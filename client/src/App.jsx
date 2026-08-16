@@ -3,6 +3,7 @@ import { Toaster } from 'react-hot-toast';
 import Home from './pages/Home';
 import Workspace from './pages/Workspace';
 import Login from './pages/Login';
+import ForgotPassword from './pages/ForgotPassword';
 import Unauthorized from './pages/Unauthorized';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import SocketProvider from './context/SocketProvider';
@@ -61,6 +62,14 @@ function App() {
                 element={
                   <PublicRoute>
                     <Login />
+                  </PublicRoute>
+                }
+              />
+              <Route
+                path="/forgot-password"
+                element={
+                  <PublicRoute>
+                    <ForgotPassword />
                   </PublicRoute>
                 }
               />

@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
-  Code2, Copy, Check, Loader2, Lock, Play, Terminal,
-  Trash2, ChevronDown, ChevronUp, Sparkles, Maximize2, Minimize2, User
-}  from 'lucide-react';
+  Code2, Copy, Check, Loader2, Lock, Play, Terminal, Download,
+  Trash2, ChevronDown, Maximize2, Minimize2
+} from 'lucide-react';
 import toast from 'react-hot-toast';
 import { executeCode } from '../services/executionApi';
 
@@ -23,7 +23,8 @@ const LANGUAGES = [
   { id: 'sql', label: 'SQL', monacoLang: 'sql' },
   { id: 'xml', label: 'XML', monacoLang: 'xml' },
   { id: 'markdown', label: 'Markdown', monacoLang: 'markdown' },
-  { id: 'bash', label: 'Bash', monacoLang: 'shell' }
+  { id: 'bash', label: 'Bash', monacoLang: 'shell' },
+  { id: 'plaintext', label: 'Plain Text', monacoLang: 'plaintext' }
 ];
 
 const DEFAULT_TEMPLATES = {
@@ -46,6 +47,38 @@ const DEFAULT_TEMPLATES = {
   bash: `#!/bin/bash\necho "Hello World"\n`
 };
 
+const getMonacoLanguageFromFilename = (filename = '') => {
+  const ext = filename.split('.').pop()?.toLowerCase() || '';
+  switch (ext) {
+    case 'html': return 'html';
+    case 'css': return 'css';
+    case 'js':
+    case 'jsx': return 'javascript';
+    case 'ts':
+    case 'tsx': return 'typescript';
+    case 'py': return 'python';
+    case 'java': return 'java';
+    case 'c': return 'c';
+    case 'cpp':
+    case 'cc':
+    case 'cxx':
+    case 'h':
+    case 'hpp': return 'cpp';
+    case 'cs': return 'csharp';
+    case 'go': return 'go';
+    case 'rs': return 'rust';
+    case 'php': return 'php';
+    case 'json': return 'json';
+    case 'sql': return 'sql';
+    case 'xml': return 'xml';
+    case 'md': return 'markdown';
+    case 'sh':
+    case 'bash': return 'shell';
+    case 'txt': return 'plaintext';
+    default: return 'plaintext';
+  }
+};
+
 const getMonacoLang = (langId) => {
   const found = LANGUAGES.find(l => l.id === langId);
   return found ? found.monacoLang : langId;
@@ -55,17 +88,20 @@ export default function CodeEditor({
   roomId,
   socket,
   currentUser,
+  activeFile = null,
   onCodeChange,
+  onDownloadFile,
   initialCode,
   initialLanguage,
   replayCode = null,
   replayLanguage = null,
+  replayExecutionOutput = null,
   isReplayMode = false,
   panelMode = 'split',
   onToggleMaximize
 }) {
-  const startLang = initialLanguage || 'javascript';
-  const startCode = initialCode !== undefined && initialCode !== null ? initialCode : (DEFAULT_TEMPLATES[startLang] || '');
+  const startLang = activeFile ? (activeFile.language || getMonacoLanguageFromFilename(activeFile.name)) : 'plaintext';
+  const startCode = activeFile ? (activeFile.content !== undefined ? activeFile.content : '') : '';
 
   const [language, setLanguage] = useState(startLang);
   const [code, setCode] = useState(startCode);
@@ -94,8 +130,52 @@ export default function CodeEditor({
   const styleElementRef = useRef(null);
   const consoleBottomRef = useRef(null);
 
-  const activeCode = isReplayMode && replayCode !== null ? replayCode : code;
-  const activeLanguage = isReplayMode && replayLanguage !== null ? replayLanguage : language;
+  const activeFileRef = useRef(activeFile);
+  useEffect(() => {
+    activeFileRef.current = activeFile;
+  }, [activeFile]);
+
+  const activeCode = isReplayMode && replayCode !== null ? replayCode : (activeFile ? code : '');
+  const activeLanguage = isReplayMode && replayLanguage !== null ? replayLanguage : (activeFile ? language : 'javascript');
+
+  // Sync activeFile changes automatically
+  useEffect(() => {
+    if (activeFile && !isReplayMode) {
+      const targetLang = activeFile.language || getMonacoLanguageFromFilename(activeFile.name);
+      const targetContent = activeFile.content !== undefined ? activeFile.content : '';
+
+      setLanguage(targetLang);
+      setCode(targetContent);
+
+      if (monacoRef.current && editorRef.current) {
+        const model = editorRef.current.getModel();
+        if (model) {
+          monacoRef.current.editor.setModelLanguage(model, getMonacoLang(targetLang));
+        }
+      }
+
+      if (editorRef.current) {
+        editorRef.current.updateOptions({ readOnly: false });
+        const model = editorRef.current.getModel();
+        if (model && model.getValue() !== targetContent) {
+          isRemoteEditRef.current = true;
+          editorRef.current.setValue(targetContent);
+          isRemoteEditRef.current = false;
+        }
+      }
+    } else if (!activeFile && !isReplayMode) {
+      setCode('');
+      if (editorRef.current) {
+        editorRef.current.updateOptions({ readOnly: true });
+        const model = editorRef.current.getModel();
+        if (model && model.getValue() !== '') {
+          isRemoteEditRef.current = true;
+          editorRef.current.setValue('');
+          isRemoteEditRef.current = false;
+        }
+      }
+    }
+  }, [activeFile?.id, activeFile?.name, activeFile?.content, isReplayMode, editorLoaded]);
 
   // Toggle readOnly mode when isReplayMode changes
   useEffect(() => {
@@ -116,23 +196,6 @@ export default function CodeEditor({
     }
   }, [activeCode]);
 
-  // Sync initial code from recovery
-  useEffect(() => {
-    if (!isReplayMode && initialCode !== undefined && initialCode !== null) {
-      const currentLang = initialLanguage || language;
-      codeByLanguageRef.current[currentLang] = initialCode;
-      if (initialCode !== code) {
-        setCode(initialCode);
-      }
-    }
-  }, [initialCode, isReplayMode]);
-
-  useEffect(() => {
-    if (!isReplayMode && initialLanguage && initialLanguage !== language) {
-      setLanguage(initialLanguage);
-    }
-  }, [initialLanguage, isReplayMode]);
-
   // Inject dynamic CSS style tag for remote cursor carets & text selection highlights
   useEffect(() => {
     let styleEl = document.getElementById('monaco-remote-cursor-styles');
@@ -145,21 +208,26 @@ export default function CodeEditor({
   }, []);
 
   const updateUserStyles = (userId, color, name) => {
-    if (!styleElementRef.current) return;
     const safeId = String(userId).replace(/[^a-zA-Z0-9_-]/g, '');
-    const cssRuleId = `user-style-${safeId}`;
+    const styleId = `remote-user-style-${safeId}`;
 
-    if (styleElementRef.current.innerHTML.includes(cssRuleId)) return;
+    let styleTag = document.getElementById(styleId);
+    if (!styleTag) {
+      styleTag = document.createElement('style');
+      styleTag.id = styleId;
+      document.head.appendChild(styleTag);
+    }
 
-    const newCss = `
-      /* ${cssRuleId} */
+    const displayName = (name || 'User').trim();
+    const escapedName = displayName.replace(/'/g, "\\'");
+    styleTag.innerHTML = `
       .remote-cursor-${safeId} {
         background-color: ${color} !important;
         width: 2px !important;
         position: absolute;
       }
       .remote-cursor-${safeId}::after {
-        content: '${name}';
+        content: '${escapedName}';
         position: absolute;
         top: -18px;
         left: 0;
@@ -167,7 +235,7 @@ export default function CodeEditor({
         color: #ffffff;
         font-size: 10px;
         font-weight: 600;
-        padding: 1px 4px;
+        padding: 1px 5px;
         border-radius: 3px;
         white-space: nowrap;
         pointer-events: none;
@@ -179,8 +247,6 @@ export default function CodeEditor({
         border-radius: 2px;
       }
     `;
-
-    styleElementRef.current.innerHTML += newCss;
   };
 
   // Load Monaco from CDN dynamically
@@ -222,11 +288,14 @@ export default function CodeEditor({
       if (!containerRef.current || editorRef.current) return;
       monacoRef.current = monaco;
 
+      const initialLang = activeFile ? getMonacoLanguageFromFilename(activeFile.name) : activeLanguage;
+      const initialValue = activeFile ? activeCode : '';
+
       const editor = monaco.editor.create(containerRef.current, {
-        value: activeCode,
-        language: getMonacoLang(activeLanguage),
+        value: initialValue,
+        language: getMonacoLang(initialLang),
         theme: 'vs-dark',
-        readOnly: isReplayMode,
+        readOnly: isReplayMode || !activeFile,
         fontSize: 13,
         fontFamily: 'Fira Code, Consolas, monospace',
         minimap: { enabled: false },
@@ -249,17 +318,28 @@ export default function CodeEditor({
         setCode(val);
         codeByLanguageRef.current[language] = val;
 
+        const currentFileId = activeFileRef.current?.id;
         if (onCodeChange) onCodeChange(val);
-        socket?.emit('code-change', { roomId, code: val, language });
+        if (currentFileId) {
+          socket?.emit('code-change', { roomId, fileId: currentFileId, code: val, language });
+        }
       });
 
       // Track cursor position & selection changes for remote cursors
       editor.onDidChangeCursorPosition((e) => {
         if (!socket || isRemoteEditRef.current || isReplayMode) return;
+        const currentFileId = activeFileRef.current?.id;
+        if (!currentFileId) return;
+
         const selection = editor.getSelection();
+        const cursorUserId = (currentUser?.id || currentUser?._id || '').toString() || socket.id;
+        const cursorUserName = currentUser?.name || currentUser?.displayName || currentUser?.username || 'User';
+
         socket.emit('cursor-change', {
           roomId,
-          userName: currentUser?.name || 'User',
+          fileId: currentFileId,
+          userId: cursorUserId,
+          userName: cursorUserName,
           userColor: currentUser?.color || '#6366F1',
           position: e.position,
           selection: selection ? {
@@ -273,9 +353,17 @@ export default function CodeEditor({
 
       editor.onDidChangeCursorSelection((e) => {
         if (!socket || isRemoteEditRef.current || isReplayMode) return;
+        const currentFileId = activeFileRef.current?.id;
+        if (!currentFileId) return;
+
+        const cursorUserId = (currentUser?.id || currentUser?._id || '').toString() || socket.id;
+        const cursorUserName = currentUser?.name || currentUser?.displayName || currentUser?.username || 'User';
+
         socket.emit('cursor-change', {
           roomId,
-          userName: currentUser?.name || 'User',
+          fileId: currentFileId,
+          userId: cursorUserId,
+          userName: cursorUserName,
           userColor: currentUser?.color || '#6366F1',
           position: e.selection.getPosition(),
           selection: {
@@ -299,7 +387,7 @@ export default function CodeEditor({
     };
   }, []);
 
-  // UPDATE MONACO MODEL LANGUAGE DYNAMICALLY WHENEVER LANGUAGE CHANGES (FEATURE 1 FIX)
+  // UPDATE MONACO MODEL LANGUAGE DYNAMICALLY WHENEVER LANGUAGE CHANGES
   useEffect(() => {
     if (editorRef.current && monacoRef.current) {
       const model = editorRef.current.getModel();
@@ -309,6 +397,18 @@ export default function CodeEditor({
       }
     }
   }, [activeLanguage]);
+
+  // CLEAR ALL REMOTE CURSORS WHEN ACTIVE FILE CHANGES
+  useEffect(() => {
+    if (editorRef.current && decorationsRef.current) {
+      Object.keys(decorationsRef.current).forEach((uId) => {
+        if (decorationsRef.current[uId]) {
+          editorRef.current.deltaDecorations(decorationsRef.current[uId], []);
+        }
+      });
+      decorationsRef.current = {};
+    }
+  }, [activeFile?.id]);
 
   // Socket event listeners for code change, cursor change, and initial socket data
   useEffect(() => {
@@ -328,6 +428,11 @@ export default function CodeEditor({
 
     const handleCodeChange = (data) => {
       if (!data || (data.code === undefined && data.code !== '')) return;
+      const currActiveId = activeFileRef.current?.id;
+      // Strictly require data.fileId to exist AND match currActiveId.
+      // If either is missing or they don't match, ignore the change completely.
+      if (!data.fileId || !currActiveId || data.fileId !== currActiveId) return;
+
       const newCode = data.code;
       const newLang = data.language || language;
 
@@ -338,12 +443,31 @@ export default function CodeEditor({
       }
       setCode(newCode);
 
+      if (editorRef.current) {
+        const model = editorRef.current.getModel();
+        if (model && model.getValue() !== newCode) {
+          isRemoteEditRef.current = true;
+          editorRef.current.setValue(newCode);
+          isRemoteEditRef.current = false;
+        }
+      }
+
       if (onCodeChange) onCodeChange(newCode);
     };
 
     const handleCursorChange = (data) => {
       if (!data || !data.userId || !editorRef.current || !monacoRef.current || isReplayMode) return;
-      const { userId, userName, userColor, position, selection } = data;
+      const { userId, userName, userColor, position, selection, fileId } = data;
+      const currActiveId = activeFileRef.current?.id;
+
+      // Ignore / clear cursor if fileId is missing or belongs to a different file
+      if (!fileId || !currActiveId || fileId !== currActiveId) {
+        if (decorationsRef.current[userId] && editorRef.current) {
+          editorRef.current.deltaDecorations(decorationsRef.current[userId], []);
+          delete decorationsRef.current[userId];
+        }
+        return;
+      }
 
       const safeId = String(userId).replace(/[^a-zA-Z0-9_-]/g, '');
       const color = userColor || '#6366F1';
@@ -382,11 +506,16 @@ export default function CodeEditor({
       decorationsRef.current[userId] = editorRef.current.deltaDecorations(oldDecorations, newDecorations);
     };
 
-    const handleUserLeft = (userId) => {
-      if (decorationsRef.current[userId] && editorRef.current) {
-        editorRef.current.deltaDecorations(decorationsRef.current[userId], []);
-        delete decorationsRef.current[userId];
-      }
+    const handleUserLeft = (leftId) => {
+      const leftIdStr = leftId ? leftId.toString() : '';
+      if (!leftIdStr || !editorRef.current) return;
+
+      Object.keys(decorationsRef.current || {}).forEach((uId) => {
+        if (uId === leftIdStr || uId.includes(leftIdStr)) {
+          editorRef.current.deltaDecorations(decorationsRef.current[uId], []);
+          delete decorationsRef.current[uId];
+        }
+      });
     };
 
     socket.off('initial-code', handleInitialCode);
@@ -405,7 +534,25 @@ export default function CodeEditor({
       socket.off('cursor-change', handleCursorChange);
       socket.off('user-left', handleUserLeft);
     };
-  }, [socket, code, language, onCodeChange, isReplayMode]);
+  }, [socket, code, language, onCodeChange, isReplayMode, activeFile?.id]);
+
+  // Synchronize console output during Replay Mode
+  useEffect(() => {
+    if (isReplayMode && replayExecutionOutput) {
+      setExecutedBy(replayExecutionOutput.executedBy || '');
+      setConsoleOutput(replayExecutionOutput.output || '');
+      setConsoleError(replayExecutionOutput.error || '');
+      setConsoleStatus(replayExecutionOutput.status || '');
+      setConsoleDuration(replayExecutionOutput.duration || '');
+      setIsConsoleOpen(true);
+    } else if (isReplayMode && !replayExecutionOutput) {
+      setConsoleOutput('');
+      setConsoleError('');
+      setConsoleStatus('');
+      setConsoleDuration('');
+      setIsConsoleOpen(false);
+    }
+  }, [isReplayMode, replayExecutionOutput]);
 
   // Listen for real-time code execution events from any room participant
   useEffect(() => {
@@ -458,7 +605,7 @@ export default function CodeEditor({
     }
 
     if (onCodeChange) onCodeChange(nextCode);
-    socket?.emit('code-change', { roomId, code: nextCode, language: newLang });
+    socket?.emit('code-change', { roomId, fileId: activeFile?.id || '', code: nextCode, language: newLang });
   };
 
   // FEATURE 4 & FEATURE 5: Online Code Execution via Piston API
@@ -468,6 +615,17 @@ export default function CodeEditor({
 
     const executorName = currentUser?.displayName || currentUser?.name || currentUser?.username || 'User';
     setExecutedBy(executorName);
+
+    if (socket && activeFile) {
+      socket.emit('file-run-execute', {
+        roomId,
+        fileId: activeFile.id,
+        fileName: activeFile.name,
+        code: codeToRun,
+        language,
+        executedBy: executorName
+      });
+    }
 
     setIsRunning(true);
     setIsConsoleOpen(true);
@@ -535,15 +693,40 @@ export default function CodeEditor({
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleDownloadCode = () => {
+    const now = new Date();
+    const timestamp = now.toISOString().replace(/[:.]/g, '-');
+    const safeRoomId = roomId ? String(roomId).replace(/[^a-zA-Z0-9_-]/g, '') : '';
+    const filename = safeRoomId ? `Code-${safeRoomId}-${timestamp}.txt` : `Code-${timestamp}.txt`;
+
+    const blob = new Blob([activeCode], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    toast.success('Code downloaded successfully.');
+  };
+
   return (
     <div className="w-full h-full flex flex-col bg-[#121212] rounded-2xl border border-white/10 overflow-hidden shadow-2xl relative">
       {/* Editor Header Toolbar */}
       <div className="h-11 bg-[#1A1A1A] border-b border-white/10 flex items-center justify-between px-3 z-10 select-none">
-        <div className="flex items-center gap-2">
-          <Code2 size={16} className="text-indigo-400" />
-          <span className="text-xs font-semibold text-gray-300">Code Editor</span>
+        <div className="flex items-center gap-2 min-w-0">
+          <Code2 size={16} className="text-indigo-400 shrink-0" />
+          <span className="text-xs font-semibold text-gray-200 truncate">
+            {activeFile ? activeFile.name : 'No File Selected'}
+          </span>
+          {activeFile && (
+            <span className="text-[10px] text-gray-500 font-mono truncate hidden sm:inline">
+              ({activeFile.creatorName || activeFile.creator || 'Owner'})
+            </span>
+          )}
           {isReplayMode && (
-            <span className="text-[10px] bg-amber-500/20 text-amber-400 border border-amber-500/30 px-1.5 py-0.2 rounded font-mono flex items-center gap-1">
+            <span className="text-[10px] bg-amber-500/20 text-amber-400 border border-amber-500/30 px-1.5 py-0.2 rounded font-mono flex items-center gap-1 shrink-0">
               <Lock size={10} /> READ-ONLY
             </span>
           )}
@@ -554,7 +737,7 @@ export default function CodeEditor({
           <select
             value={activeLanguage}
             onChange={handleLanguageChange}
-            disabled={isReplayMode}
+            disabled={isReplayMode || !activeFile}
             className="bg-black/60 border border-white/10 rounded-lg px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-indigo-500 cursor-pointer disabled:opacity-50 font-mono"
           >
             {LANGUAGES.map((lang) => (
@@ -567,10 +750,27 @@ export default function CodeEditor({
           {/* Copy Button */}
           <button
             onClick={handleCopy}
+            disabled={!activeFile}
             title="Copy Code"
-            className="p-1.5 rounded-lg text-gray-400 hover:bg-white/10 hover:text-white transition-colors cursor-pointer"
+            className="p-1.5 rounded-lg text-gray-400 hover:bg-white/10 hover:text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {copied ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+          </button>
+
+          {/* Download Current File Button */}
+          <button
+            onClick={() => {
+              if (activeFile && onDownloadFile) {
+                onDownloadFile(activeFile);
+              } else if (activeFile) {
+                handleDownloadCode();
+              }
+            }}
+            disabled={!activeFile}
+            title={activeFile ? `Download ${activeFile.name}` : "No File Selected"}
+            className="p-1.5 rounded-lg text-gray-400 hover:bg-white/10 hover:text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Download size={14} />
           </button>
 
           {/* Console Toggle Button */}
@@ -604,9 +804,9 @@ export default function CodeEditor({
           {/* FEATURE 4 — RUN BUTTON */}
           <button
             onClick={handleRunCode}
-            disabled={isRunning || isReplayMode}
+            disabled={isRunning || isReplayMode || !activeFile}
             className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition-all shadow-md cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 border border-emerald-500/40"
-            title="Execute Code Online"
+            title={activeFile ? "Execute Code Online" : "Select a file to run"}
           >
             {isRunning ? (
               <>
@@ -628,6 +828,17 @@ export default function CodeEditor({
         <div className="absolute inset-0 top-11 bg-[#0D0D0D] flex items-center justify-center gap-2 text-xs text-gray-400 font-mono z-20">
           <Loader2 size={16} className="animate-spin text-indigo-400" />
           <span>Loading Monaco Editor...</span>
+        </div>
+      )}
+
+      {/* Empty State Overlay when no file is open */}
+      {!activeFile && editorLoaded && (
+        <div className="absolute inset-0 top-11 bg-[#0D0D0D] flex flex-col items-center justify-center gap-3 text-center p-6 z-20">
+          <Code2 size={36} className="text-indigo-500/40" />
+          <h4 className="text-sm font-semibold text-gray-300">No File Selected</h4>
+          <p className="text-xs text-gray-500 max-w-xs">
+            Select a file from the <strong className="text-indigo-400">Files panel</strong> or create a new file to start editing.
+          </p>
         </div>
       )}
 

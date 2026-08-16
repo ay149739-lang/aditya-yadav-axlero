@@ -32,6 +32,12 @@ export default function InviteModal({ isOpen, onClose, roomId, isOwner, ownerNam
       });
       const data = await res.json();
       if (data.invitedUsers) setInvitedUsers(data.invitedUsers);
+      if (data.invitedUsersDetails) {
+        setInvitedUserDetails(prev => ({
+          ...prev,
+          ...data.invitedUsersDetails
+        }));
+      }
     } catch (err) {
       console.error('Failed to fetch room access details:', err);
       toast.error('Could not load room access details');
@@ -64,7 +70,12 @@ export default function InviteModal({ isOpen, onClose, roomId, isOwner, ownerNam
           searchQuery.trim();
         toast.success(`${invitedName} invited to workspace!`);
         setInvitedUsers(data.invitedUsers || []);
-        // Store display info for newly invited user
+        if (data.invitedUsersDetails) {
+          setInvitedUserDetails(prev => ({
+            ...prev,
+            ...data.invitedUsersDetails
+          }));
+        }
         if (data.invitation?.invitedUserId || data.invitation?.invitedUser) {
           const uid = (data.invitation.invitedUserId || data.invitation.invitedUser).toString();
           setInvitedUserDetails(prev => ({
@@ -104,6 +115,12 @@ export default function InviteModal({ isOpen, onClose, roomId, isOwner, ownerNam
       if (data.success) {
         toast.success('Access revoked');
         setInvitedUsers(data.invitedUsers || []);
+        if (data.invitedUsersDetails) {
+          setInvitedUserDetails(prev => ({
+            ...prev,
+            ...data.invitedUsersDetails
+          }));
+        }
       } else {
         toast.error(data.message || 'Failed to remove user');
       }
@@ -120,11 +137,24 @@ export default function InviteModal({ isOpen, onClose, roomId, isOwner, ownerNam
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // Resolve display label for a user ID
-  const getUserLabel = (userId) => {
-    const details = invitedUserDetails[userId];
-    if (details) return details.displayName || details.username || userId;
-    return userId.length > 16 ? `${userId.substring(0, 12)}...` : userId;
+  // Resolve display label for a user ID — prefers Full Name (displayName) over username
+  const getUserLabel = (userItem) => {
+    if (!userItem) return 'Collaborator';
+    if (typeof userItem === 'object') {
+      return userItem.displayName || userItem.username || 'Collaborator';
+    }
+    const uid = userItem.toString();
+    const details = invitedUserDetails[uid];
+    if (details) return details.displayName || details.username || 'Collaborator';
+    for (const d of Object.values(invitedUserDetails)) {
+      if (d.id === uid || d.username === uid) {
+        return d.displayName || d.username;
+      }
+    }
+    if (uid.match(/^[a-f\d]{24}$/i) || uid.match(/^[0-9a-f-]{36}$/i)) {
+      return 'Collaborator';
+    }
+    return uid;
   };
 
   if (!isOpen) return null;

@@ -40,26 +40,28 @@ export function AuthProvider({ children }) {
     initAuth();
   }, [token]);
 
+  const completeAuth = (userToken, userData) => {
+    if (userToken && userData) {
+      setToken(userToken);
+      setUser(userData);
+      localStorage.setItem('syncspace_token', userToken);
+      localStorage.setItem('syncspace_user', JSON.stringify(userData));
+      sessionStorage.setItem('syncspace_user', JSON.stringify(userData));
+    }
+  };
+
   const login = async (username, password) => {
     const res = await loginUser(username, password);
     if (res.success && res.token && res.user) {
-      setToken(res.token);
-      setUser(res.user);
-      localStorage.setItem('syncspace_token', res.token);
-      localStorage.setItem('syncspace_user', JSON.stringify(res.user));
-      sessionStorage.setItem('syncspace_user', JSON.stringify(res.user));
+      completeAuth(res.token, res.user);
     }
     return res;
   };
 
   const register = async (username, password, displayName) => {
     const res = await registerUser(username, password, displayName);
-    if (res.success && res.token && res.user) {
-      setToken(res.token);
-      setUser(res.user);
-      localStorage.setItem('syncspace_token', res.token);
-      localStorage.setItem('syncspace_user', JSON.stringify(res.user));
-      sessionStorage.setItem('syncspace_user', JSON.stringify(res.user));
+    if (res.success && res.token && res.user && !res.recoveryCode) {
+      completeAuth(res.token, res.user);
     }
     return res;
   };
@@ -79,6 +81,7 @@ export function AuthProvider({ children }) {
     isAuthenticated: Boolean(token && user),
     login,
     register,
+    completeAuth,
     logout
   };
 

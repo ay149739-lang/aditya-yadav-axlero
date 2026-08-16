@@ -1,5 +1,6 @@
 const roomStorage = require('../utils/roomStorage');
 const { findUserById } = require('./authController');
+const { populateInvitedUsersDetails } = require('./inviteController');
 const { v4: uuidv4 } = require('uuid');
 const socketHandler = require('../socket/socketHandler');
 const { captureSnapshot } = require('../services/snapshotService');
@@ -121,6 +122,15 @@ const getRoom = async (req, res) => {
           message: 'You are not invited to this room.'
         });
       }
+
+      // FIX 3: Enforce owner online validation for non-owners
+      const isOwnerOnline = socketHandler.isOwnerOnline ? socketHandler.isOwnerOnline(roomId) : false;
+      if (!isOwnerOnline) {
+        return res.status(403).json({
+          success: false,
+          message: 'The room owner is currently offline. You can only join when the owner is inside the room.'
+        });
+      }
     }
 
     // Resolve owner display name for UI
@@ -132,6 +142,8 @@ const getRoom = async (req, res) => {
       }
     }
 
+    const invitedUsersDetails = await populateInvitedUsersDetails(room.invitedUsers || []);
+
     return res.status(200).json({
       success: true,
       roomId: room.roomId || roomId,
@@ -140,11 +152,14 @@ const getRoom = async (req, res) => {
       ownerName: ownerDisplayName,
       members: room.members || [ownerId],
       invitedUsers: room.invitedUsers || [],
+      invitedUsersDetails,
       pendingInvites: room.pendingInvites || [],
       isPublic: room.isPublic || false,
       boardData: room.boardData || [],
       codeData: room.codeData !== undefined ? room.codeData : roomStorage.DEFAULT_CODE,
-      language: room.language || 'javascript'
+      language: room.language || 'javascript',
+      files: Array.isArray(room.files) ? room.files : [],
+      activeFileId: room.activeFileId || null
     });
   } catch (error) {
     console.error('Error fetching room data:', error);
@@ -156,7 +171,7 @@ const getRoom = async (req, res) => {
 const saveRoom = async (req, res) => {
   try {
     const { roomId } = req.params;
-    const { boardData, codeData, language } = req.body;
+    const { boardData, codeData, language, files, activeFileId } = req.body;
     const userId = (req.user?._id || req.user?.id)?.toString();
 
     if (!userId) {
@@ -198,7 +213,7 @@ const saveRoom = async (req, res) => {
       }
     }
 
-    const updatedRoom = await roomStorage.saveRoom(roomId, { boardData, codeData, language });
+    const updatedRoom = await roomStorage.saveRoom(roomId, { boardData, codeData, language, files, activeFileId });
 
     return res.status(200).json({
       success: true,

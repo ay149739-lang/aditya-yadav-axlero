@@ -4,7 +4,8 @@ const { getSnapshots, captureSnapshot } = require('../services/snapshotService')
 const getRoomSnapshots = async (req, res) => {
   try {
     const { roomId } = req.params;
-    const snapshots = await getSnapshots(roomId);
+    const userId = req.user ? (req.user.id || req.user._id || req.user.userId)?.toString() : null;
+    const snapshots = await getSnapshots(roomId, userId);
 
     return res.status(200).json({
       success: true,
@@ -25,9 +26,21 @@ const getRoomSnapshots = async (req, res) => {
 const postRoomSnapshot = async (req, res) => {
   try {
     const { roomId } = req.params;
-    const { boardData, codeData, language } = req.body;
+    const userId = req.user ? (req.user.id || req.user._id || req.user.userId)?.toString() : '';
+    const userName = req.user ? (req.user.name || req.user.username) : '';
+    const { boardData, files, activeFileId, codeData, language, executionOutput, actionType } = req.body;
 
-    const snapshot = await captureSnapshot(roomId, { boardData, codeData, language });
+    const snapshot = await captureSnapshot(roomId, {
+      userId,
+      userName,
+      boardData,
+      files,
+      activeFileId,
+      codeData,
+      language,
+      executionOutput,
+      actionType
+    });
 
     return res.status(201).json({
       success: true,

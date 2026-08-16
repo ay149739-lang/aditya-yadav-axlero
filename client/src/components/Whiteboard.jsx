@@ -25,7 +25,7 @@ export default function Whiteboard({
   const [isDrawing, setIsDrawing] = useState(false);
   const [currentShapeId, setCurrentShapeId] = useState(null);
   const [cursors, setCursors] = useState({});
-  const [textInput, setTextInput] = useState({ visible: false, x: 0, y: 0, text: '' });
+  const [textInput, setTextInput] = useState({ visible: false, x: 0, y: 0, text: '', createdAt: 0 });
 
   // Per-user Undo / Redo history stacks
   const myUndoStackRef = useRef([]);
@@ -35,6 +35,17 @@ export default function Whiteboard({
   const currentShapeRef = useRef(null);
   const textInputRef = useRef(null);
   const stageRef = useRef(null);
+
+  // Auto-focus floating text input when created
+  useEffect(() => {
+    if (textInput.visible && textInputRef.current) {
+      const timer = setTimeout(() => {
+        textInputRef.current?.focus();
+        textInputRef.current?.select();
+      }, 30);
+      return () => clearTimeout(timer);
+    }
+  }, [textInput.visible]);
 
   const activeShapes = isReplayMode && replayShapes !== null ? replayShapes : shapes;
 
@@ -294,21 +305,29 @@ export default function Whiteboard({
 
   const handleMouseDown = (e) => {
     if (isReplayMode) return;
+
+    const stage = e.target.getStage();
+    if (!stage) return;
+    const pos = stage.getPointerPosition();
+    if (!pos) return;
+
+    if (activeTool === 'text') {
+      if (textInput.visible) {
+        if (Date.now() - (textInput.createdAt || 0) < 250) return;
+        if (textInput.text.trim()) {
+          handleTextSubmit();
+        }
+      }
+      setTextInput({ visible: true, x: pos.x, y: pos.y, text: '', createdAt: Date.now() });
+      return;
+    }
+
     if (textInput.visible) {
       if (textInput.text.trim()) {
         handleTextSubmit();
       } else {
-        setTextInput({ visible: false, x: 0, y: 0, screenX: 0, screenY: 0, text: '' });
+        setTextInput({ visible: false, x: 0, y: 0, text: '', createdAt: 0 });
       }
-      if (activeTool === 'text') return;
-    }
-
-    const pos = e.target.getStage().getPointerPosition();
-    if (!pos) return;
-
-    if (activeTool === 'text') {
-      setTextInput({ visible: true, x: pos.x, y: pos.y, text: '' });
-      return;
     }
 
     setIsDrawing(true);
@@ -417,13 +436,13 @@ export default function Whiteboard({
     if (isReplayMode) return;
     setTextInput(prev => {
       if (!prev.visible) return prev;
-      if (prev.text.trim()) {
+      if (prev.text && prev.text.trim()) {
         const newShape = {
           type: 'text',
           id: uuidv4(),
           x: prev.x,
           y: prev.y,
-          text: prev.text,
+          text: prev.text.trim(),
           fontSize: 20 + strokeWidth * 2,
           fill: color,
         };
@@ -436,7 +455,7 @@ export default function Whiteboard({
         socket?.emit('draw-start', { roomId, ...newShape });
         socket?.emit('draw-end', { roomId, ...newShape });
       }
-      return { visible: false, x: 0, y: 0, screenX: 0, screenY: 0, text: '' };
+      return { visible: false, x: 0, y: 0, text: '', createdAt: 0 };
     });
   };
 
@@ -500,12 +519,16 @@ export default function Whiteboard({
           onChange={(e) => setTextInput(prev => ({ ...prev, text: e.target.value }))}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
+              e.preventDefault();
               handleTextSubmit();
             } else if (e.key === 'Escape') {
-              setTextInput({ visible: false, x: 0, y: 0, text: '' });
+              setTextInput({ visible: false, x: 0, y: 0, text: '', createdAt: 0 });
             }
           }}
-          onBlur={handleTextSubmit}
+          onBlur={() => {
+            if (Date.now() - (textInput.createdAt || 0) < 250) return;
+            handleTextSubmit();
+          }}
           autoFocus
           placeholder="Type text..."
           style={{

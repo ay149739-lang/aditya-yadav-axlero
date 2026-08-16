@@ -273,11 +273,44 @@ const findPendingInvitation = async (roomId, invitedUserId) => {
   return null;
 };
 
+const deleteInvitationsForRoomAndUser = async (roomId, targetUserId) => {
+  loadFromFile();
+  const roomStr = (roomId || '').toString();
+  const userStr = (targetUserId || '').toString();
+
+  for (const [id, inv] of Array.from(invitationsCache.entries())) {
+    const invRoom = (inv.roomId || '').toString();
+    const invUser = (inv.invitedUser || '').toString();
+    const invUserUsername = (inv.invitedUsername || '').toString().toLowerCase();
+
+    if (invRoom === roomStr && (invUser === userStr || invUserUsername === userStr.toLowerCase())) {
+      invitationsCache.delete(id);
+    }
+  }
+
+  saveToFileImmediate();
+
+  if (Invitation && Invitation.db && Invitation.db.readyState === 1) {
+    try {
+      await Invitation.deleteMany({
+        roomId: roomStr,
+        $or: [
+          { invitedUser: userStr },
+          { invitedUsername: userStr.toLowerCase() }
+        ]
+      });
+    } catch (err) {
+      console.error('MongoDB delete invitations error:', err.message);
+    }
+  }
+};
+
 module.exports = {
   createInvitation,
   getPendingInvitationsForUser,
   getAllInvitationsForUser,
   getInvitationById,
   updateInvitationStatus,
-  findPendingInvitation
+  findPendingInvitation,
+  deleteInvitationsForRoomAndUser
 };

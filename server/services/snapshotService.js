@@ -45,18 +45,39 @@ const saveToFile = () => {
 /**
  * Capture a new snapshot for a room
  */
-const captureSnapshot = async (roomId, { boardData, codeData, language }) => {
+const captureSnapshot = async (roomId, {
+  userId = '',
+  userName = '',
+  boardData = [],
+  files = [],
+  activeFileId = null,
+  codeData = '',
+  language = 'javascript',
+  executionOutput = null,
+  actionType = 'general'
+}) => {
   loadFromFile();
 
   const snapshotId = uuidv4();
   const timestamp = new Date().toISOString();
 
+  // Deep clone complex fields to ensure in-memory array mutations do not mutate historical snapshots
+  const clonedBoardData = Array.isArray(boardData) ? JSON.parse(JSON.stringify(boardData)) : [];
+  const clonedFiles = Array.isArray(files) ? JSON.parse(JSON.stringify(files)) : [];
+  const clonedOutput = executionOutput ? JSON.parse(JSON.stringify(executionOutput)) : null;
+
   const newSnapshot = {
     snapshotId,
     roomId,
-    boardData: Array.isArray(boardData) ? boardData : [],
-    codeData: codeData !== undefined ? codeData : '',
+    userId: String(userId || ''),
+    userName: String(userName || ''),
+    boardData: clonedBoardData,
+    files: clonedFiles,
+    activeFileId: activeFileId || null,
+    codeData: codeData !== undefined ? String(codeData) : '',
     language: language || 'javascript',
+    executionOutput: clonedOutput,
+    actionType: actionType || 'general',
     timestamp
   };
 
@@ -66,13 +87,18 @@ const captureSnapshot = async (roomId, { boardData, codeData, language }) => {
   }
   const list = snapshotsMap.get(roomId);
 
-  // Avoid duplicate identical snapshots — only skip if ALL fields are completely identical
+  // Avoid duplicate identical snapshots — check ALL workspace fields
   const last = list[list.length - 1];
   const boardIdentical = last && JSON.stringify(last.boardData) === JSON.stringify(newSnapshot.boardData);
+  const filesIdentical = last && JSON.stringify(last.files) === JSON.stringify(newSnapshot.files);
+  const activeFileIdentical = last && last.activeFileId === newSnapshot.activeFileId;
   const codeIdentical = last && last.codeData === newSnapshot.codeData;
   const langIdentical = last && last.language === newSnapshot.language;
-  if (boardIdentical && codeIdentical && langIdentical) {
-    return last; // No changes since last snapshot
+  const outputIdentical = last && JSON.stringify(last.executionOutput) === JSON.stringify(newSnapshot.executionOutput);
+  const userIdentical = last && last.userId === newSnapshot.userId;
+
+  if (boardIdentical && filesIdentical && activeFileIdentical && codeIdentical && langIdentical && outputIdentical && userIdentical) {
+    return null; // No changes since last snapshot
   }
 
   list.push(newSnapshot);
@@ -84,9 +110,15 @@ const captureSnapshot = async (roomId, { boardData, codeData, language }) => {
       await Snapshot.create({
         snapshotId,
         roomId,
+        userId: newSnapshot.userId,
+        userName: newSnapshot.userName,
         boardData: newSnapshot.boardData,
+        files: newSnapshot.files,
+        activeFileId: newSnapshot.activeFileId,
         codeData: newSnapshot.codeData,
         language: newSnapshot.language,
+        executionOutput: newSnapshot.executionOutput,
+        actionType: newSnapshot.actionType,
         timestamp: new Date(timestamp)
       });
     } catch (err) {
@@ -98,24 +130,34 @@ const captureSnapshot = async (roomId, { boardData, codeData, language }) => {
 };
 
 /**
- * Get sorted snapshot timeline for a room
+ * Get sorted snapshot timeline for a room (optionally filtered by user ID)
  */
-const getSnapshots = async (roomId) => {
+const getSnapshots = async (roomId, userId = null) => {
   loadFromFile();
 
   let list = [];
 
   if (Snapshot && Snapshot.db && Snapshot.db.readyState === 1) {
     try {
-      const dbSnapshots = await Snapshot.find({ roomId }).sort({ timestamp: 1 });
+      const query = { roomId };
+      if (userId) {
+        query.$or = [{ userId: String(userId) }, { userId: '' }, { userId: { $exists: false } }];
+      }
+      const dbSnapshots = await Snapshot.find(query).sort({ timestamp: 1 });
       if (dbSnapshots && dbSnapshots.length > 0) {
         list = dbSnapshots.map(s => ({
           snapshotId: s.snapshotId,
           roomId: s.roomId,
+          userId: s.userId || '',
+          userName: s.userName || '',
           boardData: s.boardData || [],
+          files: s.files || [],
+          activeFileId: s.activeFileId || null,
           codeData: s.codeData || '',
           language: s.language || 'javascript',
-          timestamp: s.timestamp.toISOString()
+          executionOutput: s.executionOutput || null,
+          actionType: s.actionType || 'general',
+          timestamp: s.timestamp ? s.timestamp.toISOString() : new Date().toISOString()
         }));
       }
     } catch (err) {
@@ -124,7 +166,17 @@ const getSnapshots = async (roomId) => {
   }
 
   if (list.length === 0 && snapshotsMap.has(roomId)) {
-    list = snapshotsMap.get(roomId);
+    list = snapshotsMap.get(roomId) || [];
+  }
+
+  // Filter in-memory snapshots by userId if provided
+  if (userId && list.length > 0) {
+    const targetIdStr = String(userId);
+    const userSnapshots = list.filter(s => !s.userId || String(s.userId) === targetIdStr);
+    // If user has specific snapshots, return only userSnapshots; otherwise fall back to all room snapshots
+    if (userSnapshots.length > 0) {
+      list = userSnapshots;
+    }
   }
 
   // Ensure chronological order

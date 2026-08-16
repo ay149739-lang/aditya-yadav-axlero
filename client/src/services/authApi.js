@@ -46,3 +46,19 @@ export const getMe = async (token) => {
     return { success: false, message: 'Server connection failed' };
   }
 };
+
+export const resetPassword = async (identifier, recoveryCode, newPassword) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/reset-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ identifier, recoveryCode, newPassword })
+    });
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error('Reset password error:', error);
+    return { success: false, message: 'Server connection failed' };
+  }
+};
+

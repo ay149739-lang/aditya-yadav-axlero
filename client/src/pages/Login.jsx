@@ -8,6 +8,8 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import toast from 'react-hot-toast';
 
+import RecoveryCodeModal from '../components/RecoveryCodeModal';
+
 const strengthColors = ['', '#ef4444', '#f97316', '#eab308', '#22c55e'];
 const strengthLabels = ['', 'Weak', 'Fair', 'Good', 'Strong'];
 
@@ -29,16 +31,22 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [strength, setStrength] = useState(0);
 
-  const { login, register, isAuthenticated } = useAuth();
+  const [generatedCode, setGeneratedCode] = useState('');
+  const [showRecoveryModal, setShowRecoveryModal] = useState(false);
+  const [pendingSession, setPendingSession] = useState(null);
+
+  const { login, register, completeAuth, isAuthenticated } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
   const from = location.state?.from?.pathname || '/';
 
-  // If already logged in, redirect
+  // If already logged in, redirect (unless user is in registration mode to show recovery modal)
   useEffect(() => {
-    if (isAuthenticated) navigate(from, { replace: true });
-  }, [isAuthenticated, navigate, from]);
+    if (isAuthenticated && !showRecoveryModal && !generatedCode && !isRegister) {
+      navigate(from, { replace: true });
+    }
+  }, [isAuthenticated, navigate, from, showRecoveryModal, generatedCode, isRegister]);
 
   const handlePasswordChange = (v) => {
     setPassword(v);
@@ -67,7 +75,13 @@ export default function Login() {
 
       if (res.success) {
         toast.success(isRegister ? '🎉 Account created! Welcome to SyncSpace!' : '👋 Welcome back!');
-        navigate(from, { replace: true });
+        if (isRegister && res.recoveryCode) {
+          setGeneratedCode(res.recoveryCode);
+          setPendingSession({ token: res.token, user: res.user });
+          setShowRecoveryModal(true);
+        } else {
+          navigate(from, { replace: true });
+        }
       } else {
         toast.error(res.message || 'Authentication failed');
       }
@@ -76,6 +90,14 @@ export default function Login() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleContinueToDashboard = () => {
+    setShowRecoveryModal(false);
+    if (pendingSession) {
+      completeAuth(pendingSession.token, pendingSession.user);
+    }
+    navigate(from, { replace: true });
   };
 
   const switchMode = (toRegister) => {
@@ -270,6 +292,19 @@ export default function Login() {
                     </p>
                   </div>
                 )}
+
+                {/* Forgot password link */}
+                {!isRegister && (
+                  <div className="flex justify-end mt-1.5">
+                    <button
+                      type="button"
+                      onClick={() => navigate('/forgot-password')}
+                      className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors cursor-pointer"
+                    >
+                      Forgot Password?
+                    </button>
+                  </div>
+                )}
               </div>
 
               <button
@@ -305,6 +340,13 @@ export default function Login() {
           </p>
         </motion.div>
       </div>
+
+      {/* Recovery Code Modal */}
+      <RecoveryCodeModal
+        isOpen={showRecoveryModal}
+        recoveryCode={generatedCode}
+        onContinue={handleContinueToDashboard}
+      />
     </div>
   );
 }

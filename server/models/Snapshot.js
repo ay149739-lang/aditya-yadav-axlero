@@ -18,9 +18,26 @@ if (mongoose) {
       required: true,
       index: true
     },
+    userId: {
+      type: String,
+      default: '',
+      index: true
+    },
+    userName: {
+      type: String,
+      default: ''
+    },
     boardData: {
       type: Array,
       default: []
+    },
+    files: {
+      type: Array,
+      default: []
+    },
+    activeFileId: {
+      type: String,
+      default: null
     },
     codeData: {
       type: String,
@@ -29,6 +46,14 @@ if (mongoose) {
     language: {
       type: String,
       default: 'javascript'
+    },
+    executionOutput: {
+      type: Object,
+      default: null
+    },
+    actionType: {
+      type: String,
+      default: 'general'
     },
     timestamp: {
       type: Date,

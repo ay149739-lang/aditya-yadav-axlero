@@ -1,6 +1,7 @@
 const roomStorage = require('../utils/roomStorage');
 const invitationStorage = require('../utils/invitationStorage');
 const { searchUserByQuery, findUserById } = require('./authController');
+const socketHandler = require('../socket/socketHandler');
 
 /**
  * Helper to authoritatively determine if the authenticated user is the room owner.
@@ -61,6 +62,34 @@ const checkIsRoomOwner = (room, reqUser) => {
   }
 
   return false;
+};
+
+/**
+ * Resolves user IDs in invitedUsers to user objects with display name & username.
+ */
+const populateInvitedUsersDetails = async (userList) => {
+  const detailsMap = {};
+  if (!Array.isArray(userList)) return detailsMap;
+
+  for (const rawId of userList) {
+    if (!rawId) continue;
+    const idStr = rawId.toString();
+    const userObj = await findUserById(idStr);
+    if (userObj) {
+      detailsMap[idStr] = {
+        id: idStr,
+        username: userObj.username || userObj.displayName || idStr,
+        displayName: userObj.displayName || userObj.username || idStr
+      };
+    } else {
+      detailsMap[idStr] = {
+        id: idStr,
+        username: idStr,
+        displayName: idStr
+      };
+    }
+  }
+  return detailsMap;
 };
 
 // POST /api/rooms/:roomId/invite — Owner invites a user (by username or email)
@@ -136,6 +165,8 @@ const inviteUser = async (req, res) => {
       invitedUsers: updatedInvited
     });
 
+    const invitedUsersDetails = await populateInvitedUsersDetails(updatedRoom.invitedUsers || []);
+
     return res.status(200).json({
       success: true,
       message: 'Invitation Sent',
@@ -146,6 +177,7 @@ const inviteUser = async (req, res) => {
       },
       owner: updatedRoom.owner,
       invitedUsers: updatedRoom.invitedUsers,
+      invitedUsersDetails,
       pendingInvites: updatedRoom.pendingInvites
     });
   } catch (error) {
@@ -312,26 +344,38 @@ const removeUser = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Only the room owner can remove access' });
     }
 
-    // targetParam might be username or user ID — resolve to user ID
     let targetUserId = targetParam;
+    let targetUsername = targetParam;
     if (!targetParam.match(/^[a-f\d]{24}$/i) && !targetParam.match(/^[0-9a-f-]{36}$/i)) {
       const targetUser = await searchUserByQuery(targetParam);
-      if (targetUser) targetUserId = targetUser.id.toString();
+      if (targetUser) {
+        targetUserId = targetUser.id.toString();
+        targetUsername = targetUser.username;
+      }
     }
 
     if (targetUserId === currentUserId) {
       return res.status(400).json({ success: false, message: 'Cannot remove yourself as owner' });
     }
 
+    // 1. SILENTLY purge all invitation records for this room and user (BUG 2 fix)
+    await invitationStorage.deleteInvitationsForRoomAndUser(roomId, targetUserId);
+    if (targetUsername && targetUsername !== targetUserId) {
+      await invitationStorage.deleteInvitationsForRoomAndUser(roomId, targetUsername);
+    }
+
+    // 2. Remove user authorization from room arrays
     const updatedInvites = (room.invitedUsers || [])
       .map(m => m.toString())
-      .filter(u => u !== targetUserId && u.toLowerCase() !== targetParam.toLowerCase());
+      .filter(u => u !== targetUserId && u.toLowerCase() !== targetParam.toLowerCase() && u.toLowerCase() !== targetUsername.toLowerCase());
+
     const updatedPending = (room.pendingInvites || [])
       .map(m => m.toString())
-      .filter(u => u !== targetUserId && u.toLowerCase() !== targetParam.toLowerCase());
+      .filter(u => u !== targetUserId && u.toLowerCase() !== targetParam.toLowerCase() && u.toLowerCase() !== targetUsername.toLowerCase());
+
     const updatedMembers = (room.members || [])
       .map(m => m.toString())
-      .filter(u => u !== targetUserId && u.toLowerCase() !== targetParam.toLowerCase());
+      .filter(u => u !== targetUserId && u.toLowerCase() !== targetParam.toLowerCase() && u.toLowerCase() !== targetUsername.toLowerCase());
 
     // Ensure owner is preserved in members list
     const roomOwnerId = room.owner ? room.owner.toString().trim() : (room.members?.[0] ? room.members[0].toString().trim() : currentUserId);
@@ -345,11 +389,14 @@ const removeUser = async (req, res) => {
       members: updatedMembers
     });
 
+    const invitedUsersDetails = await populateInvitedUsersDetails(updatedRoom.invitedUsers || []);
+
     return res.status(200).json({
       success: true,
       message: 'Access revoked',
       owner: updatedRoom.owner,
       invitedUsers: updatedRoom.invitedUsers,
+      invitedUsersDetails,
       members: updatedRoom.members
     });
   } catch (error) {
@@ -358,43 +405,107 @@ const removeUser = async (req, res) => {
   }
 };
 
-// GET /api/rooms/:roomId/access — Check access status for current user
+// GET /api/rooms/:roomId/access — Check access status for current user (BUG 1 fix)
 const checkAccess = async (req, res) => {
   try {
     const { roomId } = req.params;
+    const { roomName } = req.query; // optional Room Name match check for manual join
     const currentUserId = (req.user?._id || req.user?.id)?.toString().trim();
+    const currentUsername = (req.user?.username || req.user?.name || '').toString().trim().toLowerCase();
 
     const room = await roomStorage.getRoom(roomId);
 
     if (!room || !room.owner) {
-      return res.status(403).json({ success: false, hasAccess: false, message: 'You are not invited to this room.' });
+      return res.status(404).json({ success: false, hasAccess: false, message: 'Room not found.' });
+    }
+
+    // Verify Room Name if specified in request
+    if (roomName && roomName.trim()) {
+      const inputName = roomName.trim().toLowerCase();
+      const actualName = (room.roomName || room.roomId || '').trim().toLowerCase();
+      if (inputName !== actualName) {
+        return res.status(400).json({ success: false, hasAccess: false, message: 'Room Name does not match.' });
+      }
     }
 
     const ownerId = room.owner.toString();
-    const members = (room.members || []).map(m => m.toString());
-    if (ownerId && !members.includes(ownerId)) members.unshift(ownerId);
-
     const isOwner = checkIsRoomOwner(room, req.user);
-    const isMember = Boolean(currentUserId && (members.includes(currentUserId) || (req.user?.username && members.some(m => m.toLowerCase() === req.user.username.toLowerCase()))));
-    const hasAccess = isOwner || isMember || room.isPublic;
 
-    // Resolve owner display name
+    const members = (room.members || []).map(m => m.toString().toLowerCase());
+    const invited = (room.invitedUsers || []).map(m => m.toString().toLowerCase());
+    const pending = (room.pendingInvites || []).map(m => m.toString().toLowerCase());
+
+    const isMember = Boolean(
+      currentUserId && (
+        members.includes(currentUserId.toLowerCase()) ||
+        (currentUsername && members.includes(currentUsername))
+      )
+    );
+
+    const isInvited = Boolean(
+      currentUserId && (
+        invited.includes(currentUserId.toLowerCase()) ||
+        pending.includes(currentUserId.toLowerCase()) ||
+        (currentUsername && invited.includes(currentUsername)) ||
+        (currentUsername && pending.includes(currentUsername))
+      )
+    );
+
+    const hasAccess = isOwner || isMember || isInvited || room.isPublic;
+
+    if (!hasAccess) {
+      return res.status(403).json({
+        success: false,
+        hasAccess: false,
+        message: 'You are not invited to this room.'
+      });
+    }
+
+    // FIX 3: Enforce owner presence validation for non-owners across all entry points
+    if (!isOwner) {
+      const isOwnerOnline = socketHandler.isOwnerOnline ? socketHandler.isOwnerOnline(roomId) : false;
+      if (!isOwnerOnline) {
+        return res.status(403).json({
+          success: false,
+          hasAccess: false,
+          isOwnerOnline: false,
+          message: 'The room owner is currently offline. You can only join when the owner is inside the room.'
+        });
+      }
+    }
+
+    // If user is an invited collaborator, authorize them as member and accept pending invitation
+    if (isInvited && currentUserId) {
+      const rawMembers = (room.members || []).map(m => m.toString());
+      if (!rawMembers.includes(currentUserId)) {
+        rawMembers.push(currentUserId);
+        await roomStorage.saveRoom(roomId, { members: rawMembers });
+      }
+      const pendingInv = await invitationStorage.findPendingInvitation(roomId, currentUserId);
+      if (pendingInv) {
+        await invitationStorage.updateInvitationStatus(pendingInv.id, 'accepted');
+      }
+    }
+
     let ownerDisplayName = 'Owner';
     const ownerUser = await findUserById(ownerId);
     if (ownerUser) ownerDisplayName = ownerUser.displayName || ownerUser.username;
 
-    return res.status(hasAccess ? 200 : 403).json({
-      success: hasAccess,
-      hasAccess,
+    const invitedUsersDetails = await populateInvitedUsersDetails(room.invitedUsers || []);
+
+    return res.status(200).json({
+      success: true,
+      hasAccess: true,
       owner: ownerId,
       ownerName: ownerDisplayName,
       roomName: room.roomName || roomId,
       isOwner,
-      isMember,
+      isMember: true,
       invitedUsers: room.invitedUsers || [],
+      invitedUsersDetails,
       members: room.members || [],
       pendingInvites: room.pendingInvites || [],
-      message: hasAccess ? 'Access granted' : 'You are not invited to this room.'
+      message: 'Access granted'
     });
   } catch (error) {
     console.error('Check access error:', error);
@@ -409,5 +520,6 @@ module.exports = {
   acceptInvitation,
   rejectInvitation,
   removeUser,
-  checkAccess
+  checkAccess,
+  populateInvitedUsersDetails
 };

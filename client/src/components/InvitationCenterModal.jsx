@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { X, Inbox, Check, Ban, Clock, ArrowRight, Shield, Users } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import toast from 'react-hot-toast';
-import { fetchNotifications, acceptInvitation, rejectInvitation, fetchActiveRooms } from '../services/api';
+import { fetchNotifications, acceptInvitation, rejectInvitation, fetchActiveRooms, checkRoomAccess } from '../services/api';
 import { useNavigate } from 'react-router-dom';
 
 export default function InvitationCenterModal({ isOpen, onClose, onInvitationsUpdated }) {
@@ -35,13 +35,19 @@ export default function InvitationCenterModal({ isOpen, onClose, onInvitationsUp
     setActionId(invId);
     const res = await acceptInvitation(invId);
     if (res.ok && res.success) {
-      toast.success(`Accepted! Joining "${inv.roomName || inv.roomId}"...`);
       const updated = invitations.filter(item => (item.id || item._id) !== invId);
       setInvitations(updated);
       if (onInvitationsUpdated) onInvitationsUpdated(updated.length);
-      onClose();
-      // Navigate directly into the room
-      navigate(`/room/${inv.roomId}`);
+
+      const accessRes = await checkRoomAccess(inv.roomId);
+      if (accessRes.hasAccess) {
+        toast.success(`Accepted! Joining "${inv.roomName || inv.roomId}"...`);
+        onClose();
+        navigate(`/room/${inv.roomId}`);
+      } else {
+        toast.error(accessRes.message || 'The room owner is currently offline. You can only join when the owner is inside the room.');
+        onClose();
+      }
     } else {
       toast.error(res.message || 'Failed to accept invitation');
     }
