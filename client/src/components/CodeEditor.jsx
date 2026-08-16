@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   Code2, Copy, Check, Loader2, Lock, Play, Terminal,
   Trash2, ChevronDown, ChevronUp, Sparkles, Maximize2, Minimize2, User
-} from 'lucide-react';
+}  from 'lucide-react';
 import toast from 'react-hot-toast';
 import { executeCode } from '../services/executionApi';
 
