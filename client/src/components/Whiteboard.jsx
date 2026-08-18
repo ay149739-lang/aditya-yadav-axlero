@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, {useCallback, useEffect, useRef, useState } from 'react';
 import { Stage, Layer, Line, Rect, Text } from 'react-konva';
 import { v4 as uuidv4 } from 'uuid';
 import { Maximize2, Minimize2 } from 'lucide-react';
