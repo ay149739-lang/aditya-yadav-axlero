@@ -3,7 +3,7 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const Snapshot = require('../models/Snapshot');
 
-const DATA_DIR = path.join(__dirname, '..','data');
+const DATA_DIR = path.join(__dirname, '..', 'data');
 const SNAPSHOTS_FILE = path.join(DATA_DIR, 'snapshots.json');
 
 const snapshotsMap = new Map(); // roomId -> Array of snapshots
