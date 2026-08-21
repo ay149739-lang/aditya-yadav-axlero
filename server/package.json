@@ -18,5 +18,8 @@
     "mongoose": "^8.9.5",
     "socket.io": "^4.8.3",
     "uuid": "^14.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
   }
 }

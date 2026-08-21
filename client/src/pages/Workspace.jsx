@@ -710,19 +710,7 @@ export default function Workspace() {
   }, []);
 
   const handleExitReplay = useCallback(() => {
-    // When Replay finishes or user exits Replay, commit the final recorded snapshot state
-    // so the workspace remains exactly as the last recorded snapshot (Bug 4 requirement)
-    const lastSnap = lastReplaySnapshotRef.current;
-    if (lastSnap) {
-      if (Array.isArray(lastSnap.files)) {
-        setFiles(lastSnap.files);
-      }
-      if (lastSnap.activeFileId !== undefined) {
-        setActiveFileId(lastSnap.activeFileId);
-      }
-    }
     lastReplaySnapshotRef.current = null;
-
     setIsReplayMode(false);
     // Clear replay state so Whiteboard, Sidebar, and CodeEditor revert to live data
     setReplayShapes(null);
@@ -819,6 +807,7 @@ export default function Workspace() {
             <Whiteboard
               roomId={roomId}
               socket={socket}
+              currentUser={user}
               users={displayUsers}
               onCursorMove={(pos) => setCursor(pos)}
               initialShapes={initialShapes}

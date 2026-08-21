@@ -7,6 +7,7 @@ import Toolbar from './Toolbar';
 export default function Whiteboard({ 
   roomId, 
   socket, 
+  currentUser = null,
   users = [], 
   onCursorMove,
   initialShapes = [],
@@ -22,10 +23,13 @@ export default function Whiteboard({
   const [color, setColor] = useState('#ffffff');
   const [strokeWidth, setStrokeWidth] = useState(4);
   const [shapes, setShapes] = useState(initialShapes);
+  const [selectedShapeId, setSelectedShapeId] = useState(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [currentShapeId, setCurrentShapeId] = useState(null);
   const [cursors, setCursors] = useState({});
   const [textInput, setTextInput] = useState({ visible: false, x: 0, y: 0, text: '', createdAt: 0 });
+
+  const currentUserId = (currentUser?.id || currentUser?.userId || currentUser?.username || socket?.id || '').toString();
 
   // Per-user Undo / Redo history stacks
   const myUndoStackRef = useRef([]);
@@ -69,6 +73,29 @@ export default function Whiteboard({
     setShapes(newShapes);
     if (onShapesChange) onShapesChange(newShapes);
   };
+
+  const handleDeleteTargetShape = useCallback((targetShapeId) => {
+    if (isReplayMode || !targetShapeId) return;
+
+    setShapes((prev) => {
+      const target = prev.find(s => s.id === targetShapeId);
+      if (!target) return prev;
+
+      const targetOwner = (target.creatorId || target.userId || target.ownerId || '').toString();
+      // Allow deletion ONLY if current user owns the shape (or shape has no owner assigned)
+      if (targetOwner && currentUserId && targetOwner !== currentUserId) {
+        console.warn(`Deletion blocked: shape owned by ${targetOwner}, current user is ${currentUserId}`);
+        return prev;
+      }
+
+      const updated = prev.filter(s => s.id !== targetShapeId);
+      if (onShapesChange) onShapesChange(updated);
+      socket?.emit('delete-shape', { roomId, shapeId: targetShapeId });
+      return updated;
+    });
+
+    setSelectedShapeId((prev) => (prev === targetShapeId ? null : prev));
+  }, [isReplayMode, currentUserId, onShapesChange, socket, roomId]);
 
   const pushUndoAction = (action) => {
     myUndoStackRef.current.push(action);
@@ -139,6 +166,14 @@ export default function Whiteboard({
 
       const isCtrlOrCmd = e.ctrlKey || e.metaKey;
 
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (selectedShapeId) {
+          e.preventDefault();
+          handleDeleteTargetShape(selectedShapeId);
+        }
+        return;
+      }
+
       if (isCtrlOrCmd && e.key.toLowerCase() === 'z') {
         e.preventDefault();
         if (e.shiftKey) {
@@ -179,7 +214,7 @@ export default function Whiteboard({
     
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleUndo, handleRedo, isReplayMode]);
+  }, [handleUndo, handleRedo, isReplayMode, selectedShapeId, handleDeleteTargetShape]);
 
   // Socket event listeners
   useEffect(() => {
@@ -229,6 +264,7 @@ export default function Whiteboard({
         if (onShapesChange) onShapesChange(updated);
         return updated;
       });
+      setSelectedShapeId((prev) => (prev === shapeId ? null : prev));
     };
 
     const handleClearCanvas = () => {
@@ -299,8 +335,43 @@ export default function Whiteboard({
 
   const handleClear = () => {
     if (isReplayMode) return;
-    updateShapes([]);
-    socket?.emit('clear-canvas', { roomId });
+
+    if (selectedShapeId) {
+      handleDeleteTargetShape(selectedShapeId);
+      return;
+    }
+
+    // Delete ONLY current user's shapes, preserving shapes owned by other users
+    setShapes((prev) => {
+      const userShapes = prev.filter(s => {
+        const owner = (s.creatorId || s.userId || s.ownerId || '').toString();
+        return !owner || owner === currentUserId;
+      });
+
+      if (userShapes.length === 0) return prev;
+
+      userShapes.forEach(shape => {
+        socket?.emit('delete-shape', { roomId, shapeId: shape.id });
+      });
+
+      const remaining = prev.filter(s => {
+        const owner = (s.creatorId || s.userId || s.ownerId || '').toString();
+        return owner && owner !== currentUserId;
+      });
+
+      if (onShapesChange) onShapesChange(remaining);
+      return remaining;
+    });
+  };
+
+  const handleShapeClick = (e, shape) => {
+    if (isReplayMode) return;
+    e.cancelBubble = true;
+    setSelectedShapeId(shape.id);
+
+    if (activeTool === 'eraser') {
+      handleDeleteTargetShape(shape.id);
+    }
   };
 
   const handleMouseDown = (e) => {
@@ -308,6 +379,12 @@ export default function Whiteboard({
 
     const stage = e.target.getStage();
     if (!stage) return;
+
+    // Deselect shape when clicking on empty stage area
+    if (e.target === stage) {
+      setSelectedShapeId(null);
+    }
+
     const pos = stage.getPointerPosition();
     if (!pos) return;
 
@@ -346,6 +423,8 @@ export default function Whiteboard({
         points: [pos.x, pos.y],
         stroke: activeColor,
         strokeWidth: activeWidth,
+        creatorId: currentUserId,
+        userId: currentUserId,
       };
     } else if (activeTool === 'rect') {
       newShape = {
@@ -359,6 +438,8 @@ export default function Whiteboard({
         height: 0,
         stroke: activeColor,
         strokeWidth: activeWidth,
+        creatorId: currentUserId,
+        userId: currentUserId,
       };
     }
 
@@ -445,6 +526,8 @@ export default function Whiteboard({
           text: prev.text.trim(),
           fontSize: 20 + strokeWidth * 2,
           fill: color,
+          creatorId: currentUserId,
+          userId: currentUserId,
         };
         setShapes(prevShapes => {
           const updated = [...prevShapes, newShape];
@@ -565,6 +648,7 @@ export default function Whiteboard({
         >
           <Layer>
             {activeShapes.map((shape) => {
+              const isSelected = shape.id === selectedShapeId && !isReplayMode;
               if (shape.type === 'line') {
                 return (
                   <Line
@@ -577,6 +661,12 @@ export default function Whiteboard({
                     lineJoin="round"
                     perfectDrawEnabled={false}
                     shadowForStrokeEnabled={false}
+                    hitStrokeWidth={Math.max(shape.strokeWidth || 4, 16)}
+                    shadowColor={isSelected ? "#6366F1" : undefined}
+                    shadowBlur={isSelected ? 10 : undefined}
+                    shadowOpacity={isSelected ? 1 : undefined}
+                    onClick={(e) => handleShapeClick(e, shape)}
+                    onTap={(e) => handleShapeClick(e, shape)}
                   />
                 );
               }
@@ -588,9 +678,14 @@ export default function Whiteboard({
                     y={shape.y}
                     width={shape.width}
                     height={shape.height}
-                    stroke={shape.stroke}
-                    strokeWidth={shape.strokeWidth}
+                    stroke={isSelected ? "#6366F1" : shape.stroke}
+                    strokeWidth={isSelected ? (shape.strokeWidth || 2) + 2 : shape.strokeWidth}
                     cornerRadius={4}
+                    shadowColor={isSelected ? "#6366F1" : undefined}
+                    shadowBlur={isSelected ? 10 : undefined}
+                    shadowOpacity={isSelected ? 1 : undefined}
+                    onClick={(e) => handleShapeClick(e, shape)}
+                    onTap={(e) => handleShapeClick(e, shape)}
                   />
                 );
               }
@@ -604,6 +699,11 @@ export default function Whiteboard({
                     fontSize={shape.fontSize}
                     fill={shape.fill}
                     fontFamily="sans-serif"
+                    shadowColor={isSelected ? "#6366F1" : undefined}
+                    shadowBlur={isSelected ? 10 : undefined}
+                    shadowOpacity={isSelected ? 1 : undefined}
+                    onClick={(e) => handleShapeClick(e, shape)}
+                    onTap={(e) => handleShapeClick(e, shape)}
                   />
                 );
               }
